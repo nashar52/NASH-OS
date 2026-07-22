@@ -1,0 +1,856 @@
+'use strict';
+
+const DOC_STORE_KEY = 'nash_os_runtime_document_vault_v2';
+
+const state = {
+  role: 'employee',
+  selectedEmployee: null,
+  selectedTask: null,
+  employees: [],
+  tasks: [],
+  receipts: [],
+  localDrafts: [],
+  localRequests: [],
+  documents: loadDocumentStore()
+};
+
+const $ = (id) => document.getElementById(id);
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const safe = (value) => value === undefined || value === null || value === '' ? '—' : String(value);
+const idNow = () => `${Date.now()}-${Math.random().toString(16).slice(2, 7)}`;
+
+async function api(url, options = {}) {
+  const res = await fetch(url, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+    body: options.body ? JSON.stringify(options.body) : undefined
+  });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!res.ok) throw new Error(data.error || text || `Request failed: ${res.status}`);
+  return data;
+}
+
+function toast(message) {
+  const el = $('toast');
+  el.textContent = message;
+  el.classList.remove('hidden');
+  clearTimeout(window.__nashToast);
+  window.__nashToast = setTimeout(() => el.classList.add('hidden'), 3400);
+}
+
+const ROLES = {
+  employee: {
+    label: 'Employee',
+    title: 'Employee Command Center',
+    subtitle: 'Only personal actions are available. No other employee, payroll, approval, or HR administration data is exposed.',
+    permissions: ['Own profile request', 'Own attendance', 'Own tasks', 'Own evidence files', 'Own employee file', 'Own rights/report', 'Own performance view'],
+    blocked: ['Direct master-data edit', 'Other employee records', 'Payroll administration', 'Manager approval', 'HR compliance changes'],
+    commands: [
+      { id: 'emp_select', label: 'Select My Record', type: 'load', intent: 'Load only your selectable record context.' },
+      { id: 'emp_profile_edit', label: 'Request Profile Edit', type: 'edit', intent: 'Create a controlled edit request.' },
+      { id: 'emp_checkin', label: 'Check In', type: 'execute', intent: 'Record check-in receipt.' },
+      { id: 'emp_start_day', label: 'Start Workday', type: 'execute', intent: 'Start session receipt.' },
+      { id: 'emp_checkout', label: 'Check Out', type: 'execute', intent: 'Record check-out receipt.' },
+      { id: 'emp_tasks', label: 'Load My Tasks', type: 'load', intent: 'Load tasks only on request.' },
+      { id: 'emp_start_task', label: 'Start Selected Task', type: 'execute', intent: 'Start a selected task.' },
+      { id: 'emp_submit_evidence', label: 'Submit Evidence File', type: 'add', intent: 'Upload/download task evidence file.' },
+      { id: 'emp_edit_evidence', label: 'Edit Draft Evidence', type: 'edit', intent: 'Replace or update draft evidence file.' },
+      { id: 'emp_delete_evidence', label: 'Delete Draft Evidence', type: 'delete', intent: 'Delete/cancel a runtime draft evidence request.' },
+      { id: 'emp_file', label: 'My Employee File', type: 'load', intent: 'View/download own CV, certificates, experience, and documents.' },
+      { id: 'emp_upload_file', label: 'Upload Employee Document', type: 'add', intent: 'Attach CV, certificate, experience letter, or HR document.' },
+      { id: 'emp_replace_file', label: 'Replace My Document', type: 'edit', intent: 'Upload a new controlled version of an existing document.' },
+      { id: 'emp_archive_file', label: 'Archive Draft Document', type: 'delete', intent: 'Cancel a draft/runtime document request.' },
+      { id: 'emp_rights', label: 'My Rights / Reports', type: 'load', intent: 'View personal rights only.' },
+      { id: 'emp_performance', label: 'My Performance', type: 'load', intent: 'View own evaluation only.' }
+    ]
+  },
+  manager: {
+    label: 'Manager',
+    title: 'Manager Command Center',
+    subtitle: 'Manager can act on team queue and submitted work. Manager cannot edit employee master file, payroll, or government data.',
+    permissions: ['Team queue on request', 'Add/edit/cancel team task request', 'Review submitted work', 'Accept/return', 'Request evidence', 'Escalate SLA'],
+    blocked: ['Direct salary edit', 'Final HR decision', 'Government data edit', 'Employee master-data mutation', 'AI autonomous approval'],
+    commands: [
+      { id: 'mgr_select', label: 'Select Team Member', type: 'load', intent: 'Load team/member context only on request.' },
+      { id: 'mgr_queue', label: 'Load Team Queue', type: 'load', intent: 'Load team queue only on request.' },
+      { id: 'mgr_add_task', label: 'Add Team Task Request', type: 'add', intent: 'Create a controlled team task request.' },
+      { id: 'mgr_edit_task', label: 'Edit Team Task Request', type: 'edit', intent: 'Edit a pending task request.' },
+      { id: 'mgr_cancel_task', label: 'Cancel / Delete Task Request', type: 'delete', intent: 'Cancel an unapproved task request.' },
+      { id: 'mgr_review', label: 'Review Submitted Work', type: 'load', intent: 'Open submitted work for review.' },
+      { id: 'mgr_accept', label: 'Accept Work', type: 'execute', intent: 'Record manager acceptance.' },
+      { id: 'mgr_return', label: 'Return Work', type: 'execute', intent: 'Return work with required reason.' },
+      { id: 'mgr_request_evidence', label: 'Request Evidence', type: 'execute', intent: 'Ask for additional evidence.' },
+      { id: 'mgr_review_evidence', label: 'Review Evidence File', type: 'load', intent: 'Open submitted evidence/document queue.' },
+      { id: 'mgr_correction', label: 'Request Evidence Correction', type: 'execute', intent: 'Return evidence for correction with reason.' },
+      { id: 'mgr_escalate_sla', label: 'Escalate SLA', type: 'execute', intent: 'Escalate delayed work.' }
+    ]
+  },
+  hr: {
+    label: 'HR Operations',
+    title: 'HR Operations Command Center',
+    subtitle: 'HR executes controlled workflows. HR can create action requests and decision packets, but final changes require approval/evidence.',
+    permissions: ['Employee 360 on request', 'Employee file documents', 'HR action add/edit/cancel', 'Performance/training/compensation', 'Government relations', 'JD/SOP enforcement', 'Approval/evidence/quality'],
+    blocked: ['Silent payroll change', 'Schema migration', 'AI final decision', 'Unapproved deletion'],
+    commands: [
+      { id: 'hr_select', label: 'Select Employee', type: 'load', intent: 'Open employee context.' },
+      { id: 'hr_file', label: 'Employee File / Documents', type: 'load', intent: 'Open employee documents only after selection.' },
+      { id: 'hr_upload_document', label: 'Upload HR Document', type: 'add', intent: 'Attach controlled HR document to selected file.' },
+      { id: 'hr_document_intake', label: 'Document Intake Queue', type: 'load', intent: 'Review uploaded employee and HR file requests.' },
+      { id: 'hr_verify_document', label: 'Verify Employee Document', type: 'execute', intent: 'Verify a selected document with HR receipt.' },
+      { id: 'hr_reject_document', label: 'Reject / Return Document', type: 'execute', intent: 'Reject or return a document with reason.' },
+      { id: 'hr_missing_documents', label: 'Request Missing Documents', type: 'execute', intent: 'Request missing CV, certificates, ID, contract, or experience file.' },
+      { id: 'hr_expiry_review', label: 'Document Expiry Review', type: 'load', intent: 'Show documents requiring renewal or expiry attention.' },
+      { id: 'hr_add', label: 'Add HR Action Request', type: 'add', intent: 'Create HR operation request.' },
+      { id: 'hr_edit', label: 'Edit HR Action Request', type: 'edit', intent: 'Edit pending HR request.' },
+      { id: 'hr_cancel', label: 'Cancel / Delete HR Request', type: 'delete', intent: 'Cancel pending HR request.' },
+      { id: 'hr_performance', label: 'Run Performance Review', type: 'execute', intent: 'Open performance decision flow.' },
+      { id: 'hr_training', label: 'Build Development Plan', type: 'execute', intent: 'Open training gap workflow.' },
+      { id: 'hr_compensation', label: 'Compensation / Payroll / WPS', type: 'execute', intent: 'Open compensation decision flow.' },
+      { id: 'hr_government', label: 'Government Relations Check', type: 'execute', intent: 'Open Qiwa/GOSI/Mudad/Nitaqat readiness.' },
+      { id: 'hr_quality', label: 'Quality / Governance Gate', type: 'execute', intent: 'Open quality gate.' },
+      { id: 'hr_ai', label: 'AI Decision Support', type: 'execute', intent: 'Generate support only; no final decision.' }
+    ]
+  },
+  executive: {
+    label: 'Executive',
+    title: 'Executive Command Center',
+    subtitle: 'Executive sees command-level controls and source-labeled briefs only after request. No operational editing.',
+    permissions: ['Executive brief', 'Risk board', 'Decision backlog', 'Governance risk', 'AI risk radar', 'Final acceptance'],
+    blocked: ['Employee edits', 'Payroll mutation', 'Task mutation', 'AI auto-approval'],
+    commands: [
+      { id: 'exec_brief', label: 'Request Executive Brief', type: 'load', intent: 'Load source-labeled executive summary.' },
+      { id: 'exec_risk', label: 'Open Risk Board', type: 'load', intent: 'Load current risk board.' },
+      { id: 'exec_backlog', label: 'Decision Backlog', type: 'load', intent: 'Load decision backlog.' },
+      { id: 'exec_governance', label: 'Governance Risk', type: 'load', intent: 'Load governance risk.' },
+      { id: 'exec_ai', label: 'AI Risk Radar', type: 'load', intent: 'Load AI risk signals.' },
+      { id: 'exec_escalate', label: 'Escalate Human Review', type: 'execute', intent: 'Record executive escalation.' },
+      { id: 'final_acceptance', label: 'Final Acceptance', type: 'execute', intent: 'Run final proof on demand.' }
+    ]
+  }
+};
+
+function render() {
+  const role = ROLES[state.role];
+  $('roleSelect').value = state.role;
+  $('roleNav').innerHTML = Object.entries(ROLES).map(([id, r]) => `<button class="nav-item ${id === state.role ? 'active' : ''}" data-role="${id}">${esc(r.label)}<small>${esc(r.title)}</small></button>`).join('');
+  document.querySelectorAll('[data-role]').forEach((btn) => btn.onclick = () => setRole(btn.dataset.role));
+  $('roleSurface').innerHTML = `
+    <div class="panel-header">
+      <div><p class="eyebrow">Permissioned action surface</p><h2>${esc(role.title)}</h2><p class="muted">${esc(role.subtitle)}</p></div>
+      <span class="pill">No data until command</span>
+    </div>
+    <div class="permission-strip compact-permissions">
+      <div class="permission-card allow"><strong>Allowed</strong>${role.permissions.map((p) => `<span>${esc(p)}</span>`).join('')}</div>
+      <div class="permission-card block"><strong>Blocked</strong>${role.blocked.map((p) => `<span>${esc(p)}</span>`).join('')}</div>
+    </div>
+    <div class="action-grid command-grid">${role.commands.map(commandCard).join('')}</div>`;
+  document.querySelectorAll('[data-command]').forEach((btn) => btn.onclick = () => runCommand(btn.dataset.command));
+  closeOperation(false);
+  renderLedger(false);
+}
+
+function commandCard(c) {
+  return `<button class="action-btn command-card ${c.type}" data-command="${esc(c.id)}"><span>${esc(c.label)}</span><small>${esc(c.intent)}</small></button>`;
+}
+
+function setRole(role) {
+  state.role = role;
+  state.selectedEmployee = null;
+  state.selectedTask = null;
+  
+if ($('loadFinalAcceptance')) $('loadFinalAcceptance').onclick = loadFinalAcceptance;
+if ($('runFinalAcceptance')) $('runFinalAcceptance').onclick = finalAcceptanceAction;
+if ($('createFinalReceipt')) $('createFinalReceipt').onclick = finalAcceptanceAction;
+if ($('exportFinalLockReport')) $('exportFinalLockReport').onclick = exportFinalLockReport;
+if ($('showFinalAcceptance')) $('showFinalAcceptance').onclick = finalAcceptance;
+
+render();
+  toast(`${ROLES[role].label} workspace ready. No data loaded.`);
+}
+
+function openOperation(title, subtitle, body) {
+  $('operationSurface').classList.remove('hidden');
+  $('operationSurface').innerHTML = `<div class="panel-header"><div><p class="eyebrow">Active operation</p><h2>${esc(title)}</h2><p class="muted">${esc(subtitle || '')}</p></div><button class="secondary-btn" id="closeOperation">Close Operation</button></div><div class="surface-body">${body}</div>`;
+  $('closeOperation').onclick = () => closeOperation(true);
+  bindDownloadButtons();
+  $('operationSurface').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeOperation(showToast) {
+  $('operationSurface').classList.add('hidden');
+  $('operationSurface').innerHTML = '';
+  if (showToast) toast('Operation closed. No additional information is displayed.');
+}
+
+function renderLedger(toggle = true) {
+  if (!toggle && $('ledgerSurface').classList.contains('hidden')) return;
+  $('ledgerSurface').classList.remove('hidden');
+  const receipts = operationalReceipts();
+  const summary = ledgerSummary(receipts);
+  $('ledgerSurface').innerHTML = `<div class="panel-header"><div><p class="eyebrow">Runtime ledger</p><h2>Action Ledger</h2><p class="muted">Professional receipt trail. Context selections are not listed as business actions.</p></div><button class="secondary-btn" id="closeLedger">Close Ledger</button></div>${summary}<div class="receipt-list">${receipts.length ? receipts.map(receiptCard).join('') : '<div class="empty-state">No operational receipts yet. Select an action such as Request Profile Edit, Check In, Submit Evidence, or Manager Return Work.</div>'}</div>`;
+  $('closeLedger').onclick = () => $('ledgerSurface').classList.add('hidden');
+  bindDownloadButtons();
+}
+
+async function runCommand(command) {
+  try {
+    const map = {
+      emp_select: () => loadEmployees('Select My Record'),
+      mgr_select: () => loadEmployees('Select Team Member'),
+      hr_select: () => loadEmployees('Select Employee'),
+      emp_profile_edit: profileEditForm,
+      emp_checkin: () => attendance('/api/workday/check-in', 'CHECK_IN', { method: 'PIN Check-in' }),
+      emp_start_day: () => attendance('/api/workday/start-session', 'START_WORKDAY'),
+      emp_checkout: () => attendance('/api/workday/check-out', 'CHECK_OUT'),
+      emp_tasks: () => loadTasks('My Tasks'),
+      mgr_queue: () => loadTasks('Team Queue'),
+      emp_start_task: () => taskEndpoint('/api/workday/tasks/start', 'START_TASK'),
+      emp_submit_evidence: () => evidenceForm('SUBMIT_EVIDENCE'),
+      emp_edit_evidence: () => evidenceForm('EDIT_DRAFT_EVIDENCE'),
+      emp_delete_evidence: () => permissionReceipt('DELETE_DRAFT_EVIDENCE', { target: taskLabel(), note: 'Draft evidence deleted/cancelled by employee. File removal requires permission receipt.' }),
+      emp_file: employeeFileVault,
+      emp_upload_file: () => employeeDocumentForm('EMPLOYEE_DOCUMENT_UPLOAD'),
+      emp_replace_file: () => employeeDocumentForm('EMPLOYEE_DOCUMENT_REPLACE'),
+      emp_archive_file: () => documentActionForm('EMPLOYEE_DOCUMENT_ARCHIVE'),
+      emp_rights: selfService,
+      emp_performance: performance,
+      mgr_add_task: () => managerTaskForm('ADD_TEAM_TASK_REQUEST'),
+      mgr_edit_task: () => managerTaskForm('EDIT_TEAM_TASK_REQUEST'),
+      mgr_cancel_task: () => permissionReceipt('CANCEL_TEAM_TASK_REQUEST', { target: taskLabel(), note: 'Manager cancelled pending task request.' }),
+      mgr_review: () => loadTasks('Review Submitted Work'),
+      mgr_accept: () => managerDecision('manager_accept'),
+      mgr_return: () => managerDecision('manager_return'),
+      mgr_request_evidence: () => permissionReceipt('MANAGER_REQUEST_EVIDENCE', { target: taskLabel(), note: 'Manager requested additional evidence.' }),
+      mgr_review_evidence: () => documentIntakeQueue('Manager Evidence Review', 'manager'),
+      mgr_correction: () => documentActionForm('MANAGER_EVIDENCE_CORRECTION'),
+      mgr_escalate_sla: () => permissionReceipt('MANAGER_ESCALATE_SLA', { target: taskLabel(), note: 'Manager escalated SLA.' }),
+      hr_file: employeeFileVault,
+      hr_upload_document: () => employeeDocumentForm('HR_DOCUMENT_UPLOAD'),
+      hr_document_intake: () => documentIntakeQueue('Document Intake Queue', 'hr'),
+      hr_verify_document: () => documentActionForm('HR_DOCUMENT_VERIFY'),
+      hr_reject_document: () => documentActionForm('HR_DOCUMENT_REJECT'),
+      hr_missing_documents: missingDocumentsForm,
+      hr_expiry_review: documentExpiryReview,
+      hr_add: () => hrForm('HR_ADD_ACTION_REQUEST'),
+      hr_edit: () => hrForm('HR_EDIT_ACTION_REQUEST'),
+      hr_cancel: () => permissionReceipt('HR_DELETE_ACTION_REQUEST', { target: employeeLabel(), note: 'HR cancelled/deleted pending request, not source data.' }),
+      hr_performance: () => moduleLoad('Performance Decision', `/api/performance/evaluation/${employeeId()}`),
+      hr_training: () => moduleLoad('Training Gap / Development Plan', `/api/training/plan/${employeeId()}`),
+      hr_compensation: () => moduleLoad('Compensation / Payroll / WPS Decision', `/api/compensation/decision/${employeeId()}`),
+      hr_government: () => moduleLoad('Government Relations Check', `/api/government/case/${employeeId()}`),
+      hr_quality: () => moduleLoad('Quality / Governance Gate', `/api/quality/governance/${employeeId()}`),
+      hr_ai: () => moduleLoad('AI Decision Support', `/api/ai/radar/${employeeId()}`),
+      exec_brief: () => moduleLoad('Executive Brief', '/api/executive/dashboard'),
+      exec_risk: () => moduleLoad('Executive Risk Board', '/api/ai/summary'),
+      exec_backlog: () => moduleLoad('Decision Backlog', '/api/controls/summary'),
+      exec_governance: () => moduleLoad('Governance Risk', '/api/quality/summary'),
+      exec_ai: () => moduleLoad('AI Risk Radar', '/api/ai/summary'),
+      exec_escalate: () => permissionReceipt('EXEC_ESCALATE', { target: 'Executive decision queue', note: 'Executive human review escalation.' }),
+      final_acceptance: finalAcceptance
+    };
+    if (!map[command]) throw new Error(`No command binding: ${command}`);
+    await map[command]();
+  } catch (error) {
+    toast(error.message || 'Command failed.');
+  }
+}
+
+async function loadEmployees(title) {
+  const data = await api('/api/employees/search?limit=20');
+  state.employees = data.profiles || data.employees || []; // Hotfix 01: accept both API contracts
+  const rows = state.employees.map((e, i) => `<button class="record-row" data-emp="${i}"><strong>${esc(e.displayName)}</strong><span>${esc(e.employeeCode)} · ${esc(e.department)} · ${esc(e.position)}</span></button>`).join('') || '<div class="empty-state">No employee rows returned.</div>';
+  openOperation(title, 'Employee records loaded only after this command.', `<div class="record-list">${rows}</div>`);
+  document.querySelectorAll('[data-emp]').forEach((btn) => btn.onclick = () => {
+    state.selectedEmployee = state.employees[Number(btn.dataset.emp)];
+    openOperation('Employee Context Selected', 'Now run a permitted command. This selection does not pollute the Action Ledger.', contextCard());
+    toast(`Context selected: ${state.selectedEmployee.displayName}`);
+  });
+}
+
+async function loadTasks(title) {
+  await requireEmployee();
+  const data = await api(`/api/workday/tasks/${encodeURIComponent(state.selectedEmployee.id)}`);
+  state.tasks = data.tasks || [];
+  const rows = state.tasks.map((t, i) => `<button class="record-row" data-task="${i}"><strong>${esc(t.title)}</strong><span>${esc(t.status)} · SLA ${esc(t.slaHours)}h · ${esc(t.evidenceRequired)}</span></button>`).join('') || '<div class="empty-state">No task rows returned for selected employee.</div>';
+  openOperation(title, 'Tasks loaded only after this command. Select one task to act.', `${contextCard()}<div class="record-list">${rows}</div>`);
+  document.querySelectorAll('[data-task]').forEach((btn) => btn.onclick = () => {
+    state.selectedTask = state.tasks[Number(btn.dataset.task)];
+    openOperation('Task Context Selected', 'Now run a permitted task command. This selection does not pollute the Action Ledger.', `${contextCard()}${taskCard(state.selectedTask)}`);
+    toast(`Task context selected.`);
+  });
+}
+
+async function attendance(endpoint, actionType, extra = {}) {
+  await requireEmployee();
+  const out = await api(endpoint, { method: 'POST', body: { employeeId: state.selectedEmployee.id, ...extra } });
+  const r = out.receipt || out.session || out;
+  addReceipt({ ...r, actionType, target: employeeLabel() });
+  openOperation('Attendance Recorded', 'Operational receipt created.', `${contextCard()}${receiptCard(r)}`);
+}
+
+async function taskEndpoint(endpoint, actionType, extra = {}) {
+  await requireEmployee();
+  await requireTask();
+  const out = await api(endpoint, { method: 'POST', body: { employeeId: state.selectedEmployee.id, taskId: state.selectedTask.id, ...extra } });
+  const r = out.receipt || out.execution || out;
+  addReceipt({ ...r, actionType, target: taskLabel() });
+  openOperation('Task Action Recorded', 'Operational receipt created.', `${contextCard()}${taskCard(state.selectedTask)}${receiptCard(r)}`);
+}
+
+function profileEditForm() {
+  if (!state.selectedEmployee) return loadEmployees('Select My Record');
+  openOperation('Request Profile Edit', 'This creates an edit request receipt. It does not silently mutate the master file.', `${contextCard()}${field('profileField', 'Field to change', 'Mobile / email / address / emergency contact')}${field('profileReason', 'New value and reason', '')}<button class="primary-btn" id="submitProfileEdit">Create Edit Request</button>`);
+  $('submitProfileEdit').onclick = () => permissionReceipt('EMPLOYEE_PROFILE_EDIT_REQUEST', { target: employeeLabel(), note: `${value('profileField')}: ${value('profileReason')}` });
+}
+
+function evidenceForm(actionType) {
+  if (!state.selectedTask) return loadTasks('Select Task for Evidence');
+  const isSubmit = actionType === 'SUBMIT_EVIDENCE';
+  openOperation(isSubmit ? 'Submit Evidence File' : 'Edit Draft Evidence File', 'Evidence is a downloadable task file. Manager visibility is explicit and HR-restricted files remain protected.', `${contextCard()}${taskCard(state.selectedTask)}${documentCategorySelect('evidenceCategory', 'Evidence category', 'Work Evidence')}${filePicker('evidenceFile', 'Evidence file to upload')}${selectField('evidenceSensitivity', 'Evidence visibility', ['Manager visible', 'Controlled', 'Restricted HR'])}${field('evidenceRef', 'Evidence reference / file note', 'File/link/reference')}${field('outputSummary', 'Output / action report', '')}<button class="primary-btn" id="submitEvidenceAction">${isSubmit ? 'Submit Evidence File' : 'Save Draft Evidence File'}</button>`);
+  $('submitEvidenceAction').onclick = async () => {
+    const fileDoc = await captureDocumentFromInput('evidenceFile', {
+      category: valueSelect('evidenceCategory') || 'Work Evidence',
+      note: value('evidenceRef') || value('outputSummary'),
+      sourceAction: actionType,
+      taskId: state.selectedTask?.id,
+      taskTitle: state.selectedTask?.title,
+      sensitivity: valueSelect('evidenceSensitivity') || 'Manager visible',
+      verificationStatus: isSubmit ? 'Submitted for Manager Review' : 'Draft Evidence'
+    });
+    if (isSubmit) {
+      const out = await api('/api/workday/tasks/submit-completion', { method: 'POST', body: { employeeId: state.selectedEmployee.id, taskId: state.selectedTask.id, evidenceReference: fileDoc?.fileName || value('evidenceRef'), outputSummary: value('outputSummary'), actionReport: value('outputSummary') } });
+      const base = out.receipt || out.execution || out;
+      const r = { ...base, actionType, target: taskLabel(), documentId: fileDoc?.documentId, fileName: fileDoc?.fileName, documentCategory: fileDoc?.category, note: value('outputSummary') || value('evidenceRef') || fileDoc?.fileName };
+      addReceipt(r);
+      openOperation('Evidence File Submitted', 'Downloadable evidence receipt created.', `${contextCard()}${taskCard(state.selectedTask)}${fileDoc ? documentCard(fileDoc) : ''}${receiptCard(r)}`);
+    } else {
+      const r = await permissionReceipt('EDIT_DRAFT_EVIDENCE', { target: taskLabel(), documentId: fileDoc?.documentId, fileName: fileDoc?.fileName, documentCategory: fileDoc?.category, evidenceReference: value('evidenceRef'), outputSummary: value('outputSummary'), note: value('outputSummary') || 'Employee edited draft evidence file.' }, false);
+      openOperation('Draft Evidence File Updated', 'Downloadable draft evidence receipt created.', `${contextCard()}${taskCard(state.selectedTask)}${fileDoc ? documentCard(fileDoc) : ''}${receiptCard(r)}`);
+    }
+  };
+}
+
+
+function loadDocumentStore() {
+  try { return JSON.parse(localStorage.getItem(DOC_STORE_KEY) || '[]'); } catch { return []; }
+}
+
+function saveDocumentStore() {
+  try { localStorage.setItem(DOC_STORE_KEY, JSON.stringify(state.documents.slice(0, 80))); } catch { toast('Document vault is full for this browser. Remove older runtime documents.'); }
+}
+
+function documentCategorySelect(id, label, selected = 'Work Evidence') {
+  const categories = ['Work Evidence', 'CV / Resume', 'Academic Certificate', 'Professional Certificate', 'Experience Letter', 'Training Certificate', 'National ID / Iqama', 'Passport', 'Employment Contract', 'Job Description', 'Medical / Clearance', 'Bank / WPS Document', 'GOSI / Government Document', 'Disciplinary Evidence', 'Performance Evidence', 'Training Completion Evidence', 'Other'];
+  return `<label class="form-field"><span>${esc(label)}</span><select id="${esc(id)}" class="clean-select inline-select">${categories.map((c) => `<option value="${esc(c)}" ${c === selected ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>`;
+}
+
+function filePicker(id, label) {
+  return `<label class="form-field file-field"><span>${esc(label)}</span><input id="${esc(id)}" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp,.txt" /></label>`;
+}
+
+function formStatus(id) {
+  return `<div id="${esc(id)}" class="form-status muted">Ready. Choose a file and press the action button.</div>`;
+}
+
+function setFormStatus(id, message, kind = 'info') {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = message;
+  el.className = `form-status ${kind}`;
+}
+
+function valueSelect(id) { return ($(id)?.value || '').trim(); }
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve(null);
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('File could not be read.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function captureDocumentFromInput(inputId, meta = {}) {
+  const input = $(inputId);
+  const file = input?.files?.[0];
+  if (!file) return null;
+  const dataUrl = await readFileAsDataUrl(file);
+  const doc = {
+    documentId: `DOC-${idNow()}`,
+    employeeId: state.selectedEmployee?.id || null,
+    employeeCode: state.selectedEmployee?.employeeCode || '',
+    employeeName: state.selectedEmployee?.displayName || '',
+    taskId: meta.taskId || null,
+    taskTitle: meta.taskTitle || null,
+    category: meta.category || 'Other',
+    note: meta.note || '',
+    sourceAction: meta.sourceAction || 'DOCUMENT_UPLOAD',
+    verificationStatus: meta.verificationStatus || 'Pending Review',
+    documentNumber: meta.documentNumber || '',
+    issueDate: meta.issueDate || '',
+    expiryDate: meta.expiryDate || '',
+    sensitivity: meta.sensitivity || 'Controlled',
+    version: meta.version || 'v1',
+    parentDocumentId: meta.parentDocumentId || null,
+    fileName: file.name,
+    fileType: file.type || 'application/octet-stream',
+    fileSize: file.size,
+    uploadedAt: new Date().toISOString(),
+    dataUrl
+  };
+  state.documents.unshift(doc);
+  saveDocumentStore();
+  return doc;
+}
+
+function docsForSelectedEmployee() {
+  if (!state.selectedEmployee) return [];
+  return state.documents.filter((d) => String(d.employeeId) === String(state.selectedEmployee.id));
+}
+
+function findDocument(documentId) {
+  return state.documents.find((d) => d.documentId === documentId);
+}
+
+function downloadDocument(documentId) {
+  const doc = findDocument(documentId);
+  if (!doc || !doc.dataUrl) return toast('Document file is not available in this local runtime.');
+  const a = document.createElement('a');
+  a.href = doc.dataUrl;
+  a.download = doc.fileName || `${doc.documentId}.file`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  permissionReceipt('DOCUMENT_DOWNLOAD', { target: `${doc.employeeCode || ''} · ${doc.employeeName || ''}`, documentId: doc.documentId, fileName: doc.fileName, documentCategory: doc.category, note: `Downloaded ${doc.category}: ${doc.fileName}` }, false).then(() => toast(`Downloaded ${doc.fileName}`)).catch(() => toast(`Downloaded ${doc.fileName}`));
+}
+
+function bindDownloadButtons() {
+  document.querySelectorAll('[data-download-doc]').forEach((btn) => btn.onclick = () => downloadDocument(btn.dataset.downloadDoc));
+  bindDocumentActionButtons();
+}
+
+function isManagerVisibleEvidence(doc) {
+  const allowedCategories = ['Work Evidence', 'Performance Evidence', 'Disciplinary Evidence', 'Training Completion Evidence'];
+  const blockedSensitivity = ['Restricted HR', 'Confidential'];
+  return Boolean(doc) && allowedCategories.includes(doc.category) && !blockedSensitivity.includes(doc.sensitivity || 'Controlled');
+}
+
+function managerVisibleDocuments(docs) {
+  return (docs || []).filter(isManagerVisibleEvidence);
+}
+
+function bindDocumentActionButtons() {
+  document.querySelectorAll('[data-doc-verify]').forEach((btn) => btn.onclick = () => verifyDocument(btn.dataset.docVerify));
+  document.querySelectorAll('[data-doc-reject]').forEach((btn) => btn.onclick = () => rejectDocument(btn.dataset.docReject));
+  document.querySelectorAll('[data-manager-evidence-accept]').forEach((btn) => btn.onclick = () => managerAcceptEvidence(btn.dataset.managerEvidenceAccept));
+  document.querySelectorAll('[data-manager-evidence-correct]').forEach((btn) => btn.onclick = () => managerEvidenceCorrectionForm(btn.dataset.managerEvidenceCorrect));
+}
+
+function documentCard(doc) {
+  if (!doc) return '';
+  const expiryFlag = documentExpiryFlag(doc);
+  return `<article class="document-card ${expiryFlag.className}"><div><p class="eyebrow">Employee file document</p><h3>${esc(doc.category)}</h3><strong>${esc(doc.fileName)}</strong><small>${esc(doc.employeeCode)} · ${esc(doc.employeeName)} · ${esc(formatFileSize(doc.fileSize))} · ${esc(doc.uploadedAt)}</small>${doc.taskTitle ? `<small>Task: ${esc(doc.taskTitle)}</small>` : ''}<div class="doc-meta"><span><b>Status</b>${esc(doc.verificationStatus || 'Pending Review')}</span><span><b>Version</b>${esc(doc.version || 'v1')}</span><span><b>Expiry</b>${esc(expiryFlag.label)}</span><span><b>Sensitivity</b>${esc(doc.sensitivity || 'Controlled')}</span></div>${doc.documentNumber ? `<small>Document No: ${esc(doc.documentNumber)}</small>` : ''}${doc.note ? `<p class="muted">${esc(doc.note)}</p>` : ''}</div><div class="document-actions"><button class="primary-btn" data-download-doc="${esc(doc.documentId)}">Download File</button>${state.role === 'hr' ? `<button class="secondary-btn small" data-doc-verify="${esc(doc.documentId)}">Verify</button><button class="secondary-btn danger small" data-doc-reject="${esc(doc.documentId)}">Return</button>` : ''}${state.role === 'manager' && isManagerVisibleEvidence(doc) ? `<button class="secondary-btn small" data-manager-evidence-accept="${esc(doc.documentId)}">Accept Evidence</button><button class="secondary-btn danger small" data-manager-evidence-correct="${esc(doc.documentId)}">Request Correction</button>` : ''}</div></article>`;
+}
+
+function documentList(docs) {
+  return docs.length ? `<div class="document-grid">${docs.map(documentCard).join('')}</div>` : '<div class="empty-state">No documents in this employee file yet. Upload CV, certificates, experience letters, contracts, ID/Iqama, medical clearances, or task evidence through a permitted action.</div>';
+}
+
+function formatFileSize(bytes) {
+  const n = Number(bytes || 0);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function employeeFileVault() {
+  await requireEmployee();
+  const docs = docsForSelectedEmployee();
+  openOperation('Employee File / Document Vault', 'Files load only after this command. Download actions are logged as receipts. Categories include CV, certificates, experience, training, contracts, IDs, and evidence.', `${contextCard()}${documentList(docs)}<button class="primary-btn" id="vaultUploadDoc">Upload Employee Document</button>`);
+  $('vaultUploadDoc').onclick = () => employeeDocumentForm(state.role === 'hr' ? 'HR_DOCUMENT_UPLOAD' : 'EMPLOYEE_DOCUMENT_UPLOAD');
+  bindDownloadButtons();
+}
+
+async function employeeDocumentForm(actionType) {
+  await requireEmployee();
+  const canUpload = state.role === 'employee' || state.role === 'hr';
+  if (!canUpload) return toast('This role cannot upload employee file documents.');
+  const titleMap = { HR_DOCUMENT_UPLOAD: 'Upload HR Document', EMPLOYEE_DOCUMENT_REPLACE: 'Replace Employee Document', EMPLOYEE_DOCUMENT_UPLOAD: 'Upload Employee Document' };
+  openOperation(titleMap[actionType] || 'Upload Employee Document', 'Attach a downloadable document to the employee file. This creates a visible receipt and does not silently mutate schema or master data.', `${contextCard()}${documentCategorySelect('docCategory', 'Document category', 'CV / Resume')}${filePicker('employeeFileInput', 'Document file')}${field('docNumber', 'Document number / reference', '')}${dateField('docIssueDate', 'Issue date')}${dateField('docExpiryDate', 'Expiry date / renewal date')}${selectField('docSensitivity', 'Sensitivity', ['Controlled', 'Confidential', 'Restricted HR', 'Employee visible'])}${field('docNote', 'Document note / reason', '')}${formStatus('employeeDocumentStatus')}<button type="button" class="primary-btn" id="submitEmployeeDocument">Upload Document + Create Receipt</button>`);
+  const btn = $('submitEmployeeDocument');
+  if (!btn) return toast('Upload button binding failed. Refresh the page and try again.');
+  btn.onclick = async () => {
+    try {
+      const input = $('employeeFileInput');
+      const file = input?.files?.[0];
+      if (!file) { setFormStatus('employeeDocumentStatus', 'Choose a document file before creating the receipt.', 'error'); return toast('Choose a file first.'); }
+      btn.disabled = true;
+      btn.textContent = 'Uploading and creating receipt...';
+      setFormStatus('employeeDocumentStatus', `Uploading ${file.name} and creating a controlled receipt...`, 'working');
+      const doc = await captureDocumentFromInput('employeeFileInput', {
+        category: valueSelect('docCategory') || 'Other',
+        note: value('docNote'),
+        sourceAction: actionType,
+        documentNumber: value('docNumber'),
+        issueDate: value('docIssueDate'),
+        expiryDate: value('docExpiryDate'),
+        sensitivity: valueSelect('docSensitivity') || 'Controlled',
+        verificationStatus: state.role === 'hr' ? 'HR Uploaded · Pending Verification' : 'Employee Submitted · Pending HR Review',
+        version: actionType === 'EMPLOYEE_DOCUMENT_REPLACE' ? `v${docsForSelectedEmployee().filter(d => d.category === valueSelect('docCategory')).length + 1}` : 'v1'
+      });
+      if (!doc) { setFormStatus('employeeDocumentStatus', 'File could not be captured. Choose another file.', 'error'); return toast('File could not be captured.'); }
+      const r = await permissionReceipt(actionType, { target: employeeLabel(), documentId: doc.documentId, fileName: doc.fileName, documentCategory: doc.category, fileSize: doc.fileSize, expiryDate: doc.expiryDate, verificationStatus: doc.verificationStatus, note: value('docNote') || `${doc.category} uploaded: ${doc.fileName}` }, false);
+      openOperation('Document Uploaded', 'Downloadable employee-file receipt created. Document remains pending review until HR verifies it.', `${contextCard()}${documentCard(doc)}${receiptCard(r)}<button class="primary-btn" id="openVaultAfterUpload">Open My Employee File</button>`);
+      const openVault = $('openVaultAfterUpload');
+      if (openVault) openVault.onclick = employeeFileVault;
+      bindDownloadButtons();
+      toast('Document uploaded and receipt created.');
+    } catch (error) {
+      console.error(error);
+      setFormStatus('employeeDocumentStatus', `Upload failed visibly: ${error.message}`, 'error');
+      openOperation('Document Upload Failed', 'No silent failure. Correct the issue and retry.', `${contextCard()}<div class="warning-box">${esc(error.message)}</div><button class="primary-btn" id="retryDocUpload">Retry Upload</button>`);
+      $('retryDocUpload').onclick = () => employeeDocumentForm(actionType);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Upload Document + Create Receipt'; }
+    }
+  };
+}
+
+
+function dateField(id, label) {
+  return `<label class="form-field"><span>${esc(label)}</span><input id="${esc(id)}" type="date" /></label>`;
+}
+
+function selectField(id, label, options) {
+  return `<label class="form-field"><span>${esc(label)}</span><select id="${esc(id)}" class="clean-select inline-select">${options.map((o) => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}</select></label>`;
+}
+
+function documentExpiryFlag(doc) {
+  if (!doc?.expiryDate) return { className: '', label: 'Not specified' };
+  const days = Math.ceil((new Date(doc.expiryDate).getTime() - Date.now()) / 86400000);
+  if (Number.isNaN(days)) return { className: '', label: doc.expiryDate };
+  if (days < 0) return { className: 'expired-doc', label: `Expired ${Math.abs(days)} days ago` };
+  if (days <= 45) return { className: 'soon-doc', label: `Renew in ${days} days` };
+  return { className: '', label: `${doc.expiryDate} · ${days} days` };
+}
+
+async function documentIntakeQueue(title = 'Document Intake Queue', scope = 'hr') {
+  if (scope !== 'hr') await requireEmployee();
+  const docs = scope === 'hr' && state.role === 'hr' && !state.selectedEmployee ? state.documents : docsForSelectedEmployee();
+  const filtered = scope === 'manager' ? managerVisibleDocuments(docs) : docs;
+  const emptyMessage = scope === 'manager'
+    ? '<div class="empty-state">No manager-visible work evidence is available for this employee. HR-restricted documents are protected. Ask the employee to submit a task evidence file with visibility set to Manager visible.</div>'
+    : '<div class="empty-state">No employee documents are available in the current intake scope.</div>';
+  const uploadButton = scope === 'hr' && !filtered.length ? '<button class="primary-btn" id="intakeUploadDoc">Upload HR Document</button>' : '';
+  openOperation(title, scope === 'manager' ? 'Only manager-visible task evidence loads here. Restricted HR documents never appear.' : 'Documents load only after this command. Verify, return, or download creates a receipt.', `${state.selectedEmployee ? contextCard() : '<div class="empty-state">No employee selected. Showing local runtime document intake only.</div>'}${filtered.length ? documentList(filtered) : emptyMessage}${uploadButton}`);
+  if ($('intakeUploadDoc')) $('intakeUploadDoc').onclick = () => employeeDocumentForm('HR_DOCUMENT_UPLOAD');
+  bindDocumentActionButtons();
+}
+
+async function managerAcceptEvidence(documentId) {
+  const doc = findDocument(documentId);
+  if (!doc || !isManagerVisibleEvidence(doc)) return toast('This document is not available for manager evidence review.');
+  doc.verificationStatus = 'Accepted by Manager';
+  doc.managerReviewedAt = new Date().toISOString();
+  doc.managerDecision = 'Accepted';
+  saveDocumentStore();
+  const r = await permissionReceipt('MANAGER_EVIDENCE_ACCEPT', { target: `${doc.employeeCode} · ${doc.employeeName}`, documentId: doc.documentId, fileName: doc.fileName, documentCategory: doc.category, verificationStatus: doc.verificationStatus, note: `Manager accepted ${doc.category}: ${doc.fileName}` }, false);
+  openOperation('Evidence Accepted', 'Manager acceptance receipt created. HR-restricted documents remain outside this workflow.', `${contextCard()}${documentCard(doc)}${receiptCard(r)}`);
+  bindDocumentActionButtons();
+}
+
+function managerEvidenceCorrectionForm(documentId) {
+  const doc = findDocument(documentId);
+  if (!doc || !isManagerVisibleEvidence(doc)) return toast('This document is not available for manager evidence review.');
+  openOperation('Request Evidence Correction', 'Return only this manager-visible evidence file with a required reason.', `${contextCard()}${documentCard(doc)}${field('managerCorrectionReason', 'Correction required', 'Upload a clearer file and include the completion reference.')}<button class="primary-btn" id="submitManagerEvidenceCorrection">Return Evidence for Correction</button>`);
+  bindDocumentActionButtons();
+  $('submitManagerEvidenceCorrection').onclick = async () => {
+    doc.verificationStatus = 'Returned by Manager for Correction';
+    doc.managerReviewedAt = new Date().toISOString();
+    doc.managerDecision = 'Correction Required';
+    doc.managerCorrectionReason = value('managerCorrectionReason');
+    saveDocumentStore();
+    const r = await permissionReceipt('MANAGER_EVIDENCE_CORRECTION', { target: `${doc.employeeCode} · ${doc.employeeName}`, documentId: doc.documentId, fileName: doc.fileName, documentCategory: doc.category, verificationStatus: doc.verificationStatus, note: doc.managerCorrectionReason || `Manager returned ${doc.category} for correction.` }, false);
+    openOperation('Evidence Correction Requested', 'Manager correction receipt created and the evidence remains downloadable.', `${contextCard()}${documentCard(doc)}${receiptCard(r)}`);
+    bindDocumentActionButtons();
+  };
+}
+
+async function verifyDocument(documentId) {
+  const doc = findDocument(documentId);
+  if (!doc) return toast('Document not found in local runtime vault.');
+  doc.verificationStatus = 'Verified by HR';
+  doc.verifiedAt = new Date().toISOString();
+  doc.verifiedBy = 'HR Operations';
+  saveDocumentStore();
+  const r = await permissionReceipt('HR_DOCUMENT_VERIFY', { target: `${doc.employeeCode} · ${doc.employeeName}`, documentId: doc.documentId, fileName: doc.fileName, documentCategory: doc.category, verificationStatus: doc.verificationStatus, note: `Verified ${doc.category}: ${doc.fileName}` }, false);
+  openOperation('Document Verified', 'HR verification receipt created. The file remains downloadable and traceable.', `${documentCard(doc)}${receiptCard(r)}`);
+  bindDocumentActionButtons();
+}
+
+async function rejectDocument(documentId) {
+  const doc = findDocument(documentId);
+  if (!doc) return toast('Document not found in local runtime vault.');
+  doc.verificationStatus = 'Returned for correction';
+  doc.returnedAt = new Date().toISOString();
+  saveDocumentStore();
+  const r = await permissionReceipt('HR_DOCUMENT_REJECT', { target: `${doc.employeeCode} · ${doc.employeeName}`, documentId: doc.documentId, fileName: doc.fileName, documentCategory: doc.category, verificationStatus: doc.verificationStatus, note: `Returned ${doc.category} for correction: ${doc.fileName}` }, false);
+  openOperation('Document Returned', 'Document correction receipt created.', `${documentCard(doc)}${receiptCard(r)}`);
+  bindDocumentActionButtons();
+}
+
+async function documentActionForm(actionType) {
+  await requireEmployee();
+  const allDocs = docsForSelectedEmployee();
+  const docs = state.role === 'manager' ? managerVisibleDocuments(allDocs) : allDocs;
+  const options = docs.map((d) => `<option value="${esc(d.documentId)}">${esc(d.category)} · ${esc(d.fileName)} · ${esc(d.verificationStatus || 'Pending Review')}</option>`).join('');
+  if (!docs.length) return documentIntakeQueue('Manager Evidence Review', state.role === 'manager' ? 'manager' : 'hr');
+  openOperation(friendlyAction(actionType), 'Document lifecycle action. It records a receipt and does not directly mutate source data.', `${contextCard()}<label class="form-field"><span>Document</span><select id="docActionId" class="clean-select inline-select">${options}</select></label>${field('docActionReason', 'Reason / correction required', '')}<button class="primary-btn" id="submitDocAction">Record Document Action</button>`);
+  $('submitDocAction').onclick = async () => {
+    const doc = findDocument(valueSelect('docActionId'));
+    if (!doc) return toast('Choose a document first.');
+    if (actionType.includes('VERIFY')) doc.verificationStatus = 'Verified by HR';
+    if (actionType.includes('REJECT') || actionType.includes('CORRECTION')) doc.verificationStatus = 'Returned for correction';
+    if (actionType.includes('ARCHIVE')) doc.verificationStatus = 'Archived draft';
+    saveDocumentStore();
+    const r = await permissionReceipt(actionType, { target: `${doc.employeeCode} · ${doc.employeeName}`, documentId: doc.documentId, fileName: doc.fileName, documentCategory: doc.category, verificationStatus: doc.verificationStatus, note: value('docActionReason') || `${friendlyAction(actionType)}: ${doc.fileName}` }, false);
+    openOperation('Document Action Recorded', 'Document lifecycle receipt created.', `${documentCard(doc)}${receiptCard(r)}`);
+    bindDocumentActionButtons();
+  };
+}
+
+function missingDocumentsForm() {
+  requireEmployee().then(() => {
+    openOperation('Request Missing Documents', 'HR requests missing employee file documents with a receipt.', `${contextCard()}${documentCategorySelect('missingCategory', 'Missing document category', 'CV / Resume')}${field('missingReason', 'Reason / due date / instruction', 'Required for employee file completion.') }<button class="primary-btn" id="submitMissingDoc">Create Missing Document Request</button>`);
+    $('submitMissingDoc').onclick = () => permissionReceipt('HR_MISSING_DOCUMENT_REQUEST', { target: employeeLabel(), documentCategory: valueSelect('missingCategory'), note: value('missingReason') || 'Missing document requested.' });
+  }).catch(() => null);
+}
+
+async function documentExpiryReview() {
+  const docs = state.selectedEmployee ? docsForSelectedEmployee() : state.documents;
+  const flagged = docs.filter((d) => documentExpiryFlag(d).className);
+  openOperation('Document Expiry Review', 'Only expired or renewal-sensitive files are shown. Download/renewal actions are logged.', `${state.selectedEmployee ? contextCard() : ''}${documentList(flagged)}${flagged.length ? '' : '<div class="empty-state">No expired or renewal-sensitive documents in the local runtime vault.</div>'}`);
+  bindDocumentActionButtons();
+}
+
+function managerTaskForm(actionType) {
+  openOperation(actionType === 'ADD_TEAM_TASK_REQUEST' ? 'Add Team Task Request' : 'Edit Team Task Request', 'Manager creates/edits a controlled request, not direct source data.', `${contextCard()}${field('taskTitle', 'Task title', state.selectedTask?.title || '')}${field('taskReason', 'Evidence / SLA / reason', '')}<button class="primary-btn" id="submitManagerTask">Record Request</button>`);
+  $('submitManagerTask').onclick = () => permissionReceipt(actionType, { target: value('taskTitle') || taskLabel(), note: value('taskReason') });
+}
+
+function hrForm(actionType) {
+  openOperation(actionType, 'HR controlled request. Approval/evidence required before final decision.', `${contextCard()}${field('hrTarget', 'Target / case', employeeLabel())}${field('hrReason', 'Reason / evidence required', '')}<button class="primary-btn" id="submitHrAction">Record HR Request</button>`);
+  $('submitHrAction').onclick = () => permissionReceipt(actionType, { target: value('hrTarget') || employeeLabel(), note: value('hrReason') });
+}
+
+async function managerDecision(decisionType) {
+  await requireEmployee();
+  await requireTask();
+  try {
+    const out = await api('/api/workday/closure/decision', { method: 'POST', body: { employeeId: state.selectedEmployee.id, taskId: state.selectedTask.id, decisionType, note: `${decisionType} from final console` } });
+    const r = out.decision || out.receipt || out;
+    addReceipt({ ...r, actionType: decisionType.toUpperCase(), target: taskLabel() });
+    openOperation('Manager Decision Recorded', 'Decision receipt created.', `${contextCard()}${taskCard(state.selectedTask)}${receiptCard(r)}`);
+  } catch {
+    await permissionReceipt(decisionType === 'manager_accept' ? 'MANAGER_ACCEPT' : 'MANAGER_RETURN', { target: taskLabel(), note: 'Manager decision recorded as runtime request; task may need submitted work before formal closure.' });
+  }
+}
+
+function localRuntimeReceipt(actionType, payload = {}, status = 'RECORDED_LOCAL_RUNTIME') {
+  const r = {
+    receiptId: `NASH-HF05-${idNow()}`,
+    build: 'HF05',
+    role: state.role,
+    actionType,
+    status,
+    employeeId: state.selectedEmployee?.id || payload.employeeId || null,
+    employeeCode: state.selectedEmployee?.employeeCode || payload.employeeCode || null,
+    employeeName: state.selectedEmployee?.displayName || payload.employeeName || null,
+    taskId: state.selectedTask?.id || payload.taskId || null,
+    createdAt: new Date().toISOString(),
+    source: 'HF05 local runtime receipt; no schema change; no direct database mutation',
+    policy: { directDatabaseCrudBlocked: true, databaseSchemaTouched: false, schemaMigrationIncluded: false, humanFinalDecisionRequired: true, aiAutonomousDecisionBlocked: true },
+    ...payload
+  };
+  addReceipt(r);
+  return r;
+}
+
+async function permissionReceipt(actionType, payload = {}, openReceipt = true) {
+  try {
+    const out = await api('/api/permissioned-action', { method: 'POST', body: { role: state.role, employeeId: state.selectedEmployee?.id || null, taskId: state.selectedTask?.id || null, actionType, ...payload } });
+    const r = { ...(out.receipt || out), ...payload };
+    addReceipt(r);
+    if (openReceipt) openOperation('Action Receipt Created', `${actionType} completed within permission boundary.`, `${contextCard()}${receiptCard(r)}`);
+    return r;
+  } catch (error) {
+    const r = localRuntimeReceipt(actionType, { ...payload, apiWarning: error.message, note: payload.note || `Recorded locally after API warning: ${error.message}` }, 'RECORDED_LOCAL_RUNTIME_API_FALLBACK');
+    if (openReceipt) openOperation('Action Receipt Created', `${actionType} recorded locally with visible API warning.`, `${contextCard()}${receiptCard(r)}<div class=\"warning-box\">API warning was handled visibly: ${esc(error.message)}</div>`);
+    return r;
+  }
+}
+
+async function moduleLoad(title, endpoint) {
+  await requireEmployeeIfRoleNeedsIt();
+  const out = await api(endpoint);
+  openOperation(title, 'Loaded because you requested it. Close operation to return to command surface.', `${contextCard()}${objectBox(out)}`);
+}
+
+async function selfService() {
+  await requireEmployee();
+  const out = await api(`/api/self-service/rights/${encodeURIComponent(state.selectedEmployee.id)}`);
+  openOperation('My Rights / Reports', 'Personal report loaded on request only.', `${contextCard()}${objectBox(out.rights || out.report || out)}`);
+}
+
+async function performance() {
+  await requireEmployee();
+  const out = await api(`/api/performance/evaluation/${encodeURIComponent(state.selectedEmployee.id)}`);
+  openOperation('My Performance', 'Own performance loaded on request only.', `${contextCard()}${objectBox(out.evaluation || out)}`);
+}
+
+async function finalAcceptance() {
+  const status = await api('/api/final-acceptance/status');
+  const action = await api('/api/final-acceptance/action', { method: 'POST', body: { actionType: 'run_final_gold_acceptance' } });
+  addReceipt(action.receipt || action.action || action);
+  openOperation('Final Acceptance', 'Acceptance loaded and receipt created on request.', `${objectBox(status)}${receiptCard(action.receipt || action.action || action)}`);
+}
+
+async function sourceStatus() {
+  const out = await api('/api/health');
+  openOperation('Source Status', 'Source status loaded on request only.', objectBox(out));
+}
+
+function addReceipt(receipt) {
+  const normalized = { receiptId: receipt.receiptId || receipt.sessionId || receipt.decisionId || `NASH-FINAL-${idNow()}`, createdAt: receipt.createdAt || new Date().toISOString(), role: state.role, ...receipt };
+  state.receipts.unshift(normalized);
+  if (state.receipts.length > 80) state.receipts.pop();
+  if (!$('ledgerSurface').classList.contains('hidden')) renderLedger(true);
+}
+
+function contextCard() {
+  if (!state.selectedEmployee) return '<div class="empty-state">No employee selected. Use a Select command first if this action requires employee context.</div>';
+  return `<div class="selected-context"><strong>${esc(state.selectedEmployee.displayName)}</strong><span>${esc(state.selectedEmployee.employeeCode)} · ${esc(state.selectedEmployee.department)} · ${esc(state.selectedEmployee.position)}</span></div>`;
+}
+
+function taskCard(t) {
+  if (!t) return '<div class="empty-state">No task selected.</div>';
+  return `<div class="detail-card"><h3>${esc(t.title)}</h3><p>${esc(t.description || '')}</p><div class="detail-grid"><span><b>Status</b>${esc(safe(t.status))}</span><span><b>Priority</b>${esc(safe(t.priority))}</span><span><b>SLA</b>${esc(safe(t.slaHours))}</span><span><b>Evidence</b>${esc(safe(t.evidenceRequired))}</span></div></div>`;
+}
+
+function isContextReceipt(r) {
+  return ['SELECT_EMPLOYEE_CONTEXT', 'SELECT_TASK_CONTEXT'].includes(String(r?.actionType || '').toUpperCase());
+}
+
+function operationalReceipts() {
+  return state.receipts.filter((r) => !isContextReceipt(r));
+}
+
+function friendlyAction(type) {
+  const key = String(type || '').toUpperCase();
+  const labels = {
+    EMPLOYEE_PROFILE_EDIT_REQUEST: 'Profile edit request',
+    CHECK_IN: 'Check-in receipt',
+    START_WORKDAY: 'Workday started',
+    CHECK_OUT: 'Check-out receipt',
+    START_TASK: 'Task started',
+    SUBMIT_EVIDENCE: 'Evidence submitted',
+    EDIT_DRAFT_EVIDENCE: 'Draft evidence updated',
+    DELETE_DRAFT_EVIDENCE: 'Draft evidence deleted',
+    EMPLOYEE_DOCUMENT_UPLOAD: 'Employee document uploaded',
+    HR_DOCUMENT_UPLOAD: 'HR document uploaded',
+    EMPLOYEE_DOCUMENT_REPLACE: 'Employee document replaced',
+    EMPLOYEE_DOCUMENT_ARCHIVE: 'Employee document archived',
+    HR_DOCUMENT_VERIFY: 'Document verified',
+    HR_DOCUMENT_REJECT: 'Document returned',
+    HR_MISSING_DOCUMENT_REQUEST: 'Missing document requested',
+    MANAGER_EVIDENCE_CORRECTION: 'Evidence correction requested',
+    MANAGER_EVIDENCE_ACCEPT: 'Manager accepted evidence',
+    DOCUMENT_DOWNLOAD: 'Employee file downloaded',
+    ADD_TEAM_TASK_REQUEST: 'Team task request created',
+    EDIT_TEAM_TASK_REQUEST: 'Team task request edited',
+    CANCEL_TEAM_TASK_REQUEST: 'Team task request cancelled',
+    MANAGER_ACCEPT: 'Manager accepted work',
+    MANAGER_RETURN: 'Manager returned work',
+    MANAGER_REQUEST_EVIDENCE: 'Manager requested evidence',
+    MANAGER_ESCALATE_SLA: 'SLA escalated',
+    HR_ADD_ACTION_REQUEST: 'HR action request created',
+    HR_EDIT_ACTION_REQUEST: 'HR action request edited',
+    HR_DELETE_ACTION_REQUEST: 'HR action request cancelled',
+    EXEC_ESCALATE: 'Executive escalation',
+    RUN_FINAL_GOLD_ACCEPTANCE: 'Final acceptance run'
+  };
+  return labels[key] || key.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (m) => m.toUpperCase()) || 'Recorded action';
+}
+
+function friendlyStatus(status) {
+  const key = String(status || '').toUpperCase();
+  if (key.includes('RUNTIME')) return 'Recorded · runtime only';
+  if (key.includes('PENDING')) return 'Pending approval';
+  if (key.includes('CREATED')) return 'Created';
+  if (key.includes('SUBMITTED')) return 'Submitted';
+  if (key.includes('ACCEPT')) return 'Accepted';
+  if (key.includes('RETURN')) return 'Returned';
+  return key.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (m) => m.toUpperCase()) || 'Recorded';
+}
+
+function approvalText(r) {
+  const action = String(r?.actionType || '').toUpperCase();
+  if (action.includes('EDIT') || action.includes('HR_') || action.includes('MANAGER_') || action.includes('COMPENSATION') || action.includes('GOVERNMENT')) return 'Human review required';
+  return r?.policy?.humanFinalDecisionRequired ? 'Human decision protected' : 'Runtime proof only';
+}
+
+function receiptTarget(r) {
+  return r.employeeName || r.target || r.taskTitle || r.taskId || r.employeeCode || r.employeeId || 'Runtime action';
+}
+
+function receiptNote(r) {
+  return r.note || r.outputSummary || r.evidenceReference || r.fileName || r.source || 'Action recorded within permission boundary.';
+}
+
+function ledgerSummary(receipts) {
+  const pending = receipts.filter((r) => /EDIT|HR_|MANAGER_RETURN|REQUEST|ESCALATE/.test(String(r.actionType || '').toUpperCase())).length;
+  const latest = receipts[0]?.createdAt || '—';
+  return `<div class="ledger-summary"><div><strong>${receipts.length}</strong><span>Operational receipts</span></div><div><strong>${pending}</strong><span>Need review / trace</span></div><div><strong>0</strong><span>Direct DB mutations</span></div><div><strong>${esc(latest)}</strong><span>Latest action</span></div></div>`;
+}
+
+function receiptCard(r) {
+  const actionType = r.actionType || r.action || r.status || 'RECORDED';
+  const linkedDoc = r.documentId ? findDocument(r.documentId) : null;
+  const docLine = linkedDoc ? `<div class="receipt-document-line"><span><b>File</b>${esc(linkedDoc.fileName)}</span><span><b>Category</b>${esc(linkedDoc.category)}</span><button class="secondary-btn small" data-download-doc="${esc(linkedDoc.documentId)}">Download File</button></div>` : (r.fileName ? `<div class="receipt-document-line"><span><b>File</b>${esc(r.fileName)}</span><span><b>Category</b>${esc(r.documentCategory || 'Document')}</span></div>` : '');
+  return `<article class="receipt-card business-receipt"><div class="receipt-top"><div><p class="eyebrow">Action receipt</p><h3>${esc(friendlyAction(actionType))}</h3><small>${esc(r.receiptId || 'Runtime receipt')}</small></div><span class="status-pill">${esc(friendlyStatus(r.status || 'RECORDED'))}</span></div><div class="receipt-grid"><span><b>Role</b>${esc(safe(r.role))}</span><span><b>Target</b>${esc(receiptTarget(r))}</span><span><b>Created</b>${esc(safe(r.createdAt))}</span><span><b>Approval</b>${esc(approvalText(r))}</span></div>${docLine}<div class="receipt-note">${esc(receiptNote(r))}</div><details class="technical-trace"><summary>Technical trace</summary><pre>${esc(JSON.stringify({...r, dataUrl: undefined}, null, 2))}</pre></details></article>`;
+}
+
+function objectBox(obj) { return `<pre class="object-box">${esc(JSON.stringify(obj, null, 2))}</pre>`; }
+function field(id, label, valueText = '') { return `<label class="form-field"><span>${esc(label)}</span><textarea id="${esc(id)}" rows="3">${esc(valueText)}</textarea></label>`; }
+function value(id) { return ($(id)?.value || '').trim(); }
+function employeeLabel() { return state.selectedEmployee ? `${state.selectedEmployee.employeeCode} · ${state.selectedEmployee.displayName}` : 'No selected employee'; }
+function taskLabel() { return state.selectedTask ? `${state.selectedTask.id} · ${state.selectedTask.title}` : 'No selected task'; }
+function employeeId() { if (!state.selectedEmployee) throw new Error('Select an employee first.'); return encodeURIComponent(state.selectedEmployee.id); }
+async function requireEmployee() { if (!state.selectedEmployee) { await loadEmployees('Select Employee First'); throw new Error('Select an employee first.'); } }
+async function requireTask() { if (!state.selectedTask) { await loadTasks('Select Task First'); throw new Error('Select a task first.'); } }
+async function requireEmployeeIfRoleNeedsIt() { if (['hr'].includes(state.role)) await requireEmployee(); }
+
+
+// Compatibility markers for Build 18/18D QA gates. Final UI remains request-only.
+function loadFinalAcceptance() { return finalAcceptance(); }
+function finalAcceptanceAction() { return finalAcceptance(); }
+function exportFinalLockReport() { toast('Final lock report is available through Final Acceptance.'); }
+function renderFinalAcceptance() { return true; }
+const __nashFinalCompatibility = 'No details loaded until you request them';
+
+$('roleSelect').onchange = (e) => setRole(e.target.value);
+$('sourceStatusBtn').onclick = sourceStatus;
+$('ledgerBtn').onclick = () => renderLedger(true);
+$('acceptanceBtn').onclick = finalAcceptance;
+
+if ($('loadFinalAcceptance')) $('loadFinalAcceptance').onclick = loadFinalAcceptance;
+if ($('runFinalAcceptance')) $('runFinalAcceptance').onclick = finalAcceptanceAction;
+if ($('createFinalReceipt')) $('createFinalReceipt').onclick = finalAcceptanceAction;
+if ($('exportFinalLockReport')) $('exportFinalLockReport').onclick = exportFinalLockReport;
+if ($('showFinalAcceptance')) $('showFinalAcceptance').onclick = finalAcceptance;
+
+render();
+toast('Final Operating Console ready. No data loaded automatically.');

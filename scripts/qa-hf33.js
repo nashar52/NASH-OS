@@ -1,0 +1,18 @@
+const fs=require('fs');
+const checks=[]; const add=(n,p)=>checks.push([n,!!p]);
+const app=fs.readFileSync('public/app.js','utf8');
+const html=fs.readFileSync('public/index.html','utf8');
+const css=fs.readFileSync('public/styles.css','utf8');
+const launcher=fs.readFileSync('START_NASH_HF33.cmd','utf8');
+add('HF33 build marker',app.includes('HF33-DIRECT-APP-REBUILD'));
+add('Attendance dedicated app',app.includes('function employeeAttendanceApp'));
+add('Tasks dedicated app',app.includes('function employeeTasksApp'));
+add('Employee file dedicated app',app.includes('function employeeFileApp'));
+add('Performance dedicated app',app.includes('function employeePerformanceApp'));
+add('Rights dedicated app',app.includes('function employeeRightsApp'));
+add('Cache-busted JS',html.includes('hf33-direct-app-rebuild'));
+add('HF33 proof style',css.includes('.hf33-build-proof'));
+add('Clean port launcher',launcher.includes('taskkill /F /PID'));
+add('No schema migration command',!launcher.toLowerCase().includes('migrate')&&!launcher.toLowerCase().includes('seed'));
+for(const [n,p] of checks) console.log(`${p?'PASS':'FAIL'} ${n}`);
+const passed=checks.filter(x=>x[1]).length; console.log(`HF33 QA ${passed}/${checks.length}`); process.exit(passed===checks.length?0:1);

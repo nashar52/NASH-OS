@@ -1,0 +1,20 @@
+const fs = require('fs');
+const checks = [];
+const app = fs.readFileSync('public/app.js','utf8');
+const html = fs.readFileSync('public/index.html','utf8');
+const server = fs.readFileSync('server.js','utf8');
+const pkg = require('../package.json');
+function check(name, pass){ checks.push({name,pass}); console.log(`${pass?'PASS':'FAIL'} ${name}`); }
+check('HF34 package version', pkg.version.includes('hf34-role-bound-access-control'));
+check('Login role selector removed', !html.includes('id="loginRoleSelect"'));
+check('Workspace role switcher removed', !html.includes('id="roleSelect"'));
+check('Assigned access card present', html.includes('assignedRoleCard'));
+check('Server role directory present', server.includes('HF34_ROLE_DIRECTORY'));
+check('Server access login present', server.includes("'/api/access/login'"));
+check('Server session validation present', server.includes("'/api/access/session'"));
+check('Permissioned actions use server session role', server.includes('const role = accessSession.role'));
+check('Client sends access token', app.includes("'X-NASH-SESSION'"));
+check('No schema migration introduced', !server.includes('ALTER TABLE') && !server.includes('CREATE TABLE'));
+const failed=checks.filter(x=>!x.pass);
+console.log(`HF34 QA ${checks.length-failed.length}/${checks.length}`);
+process.exit(failed.length?1:0);

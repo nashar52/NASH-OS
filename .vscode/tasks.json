@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "NASH Clean Build 04 QA",
+      "type": "shell",
+      "command": "npm.cmd run mysql:lock-check && npm.cmd run qa:clean-build-04",
+      "problemMatcher": []
+    },
+    {
+      "label": "NASH Clean Build 04 Start",
+      "type": "shell",
+      "command": "npm.cmd start",
+      "problemMatcher": []
+    },
+    {
+      "label": "NASH Kill Port 3000",
+      "type": "shell",
+      "command": "npm.cmd run kill:port",
+      "problemMatcher": []
+    },
+    {
+      "label": "qa:clean-build-15",
+      "type": "shell",
+      "command": "npm.cmd run qa:clean-build-15",
+      "problemMatcher": []
+    },
+    {
+      "label": "QA Clean Build 16",
+      "type": "shell",
+      "command": "npm.cmd run qa:clean-build-16",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "QA Clean Build 17",
+      "type": "shell",
+      "command": "npm.cmd run qa:clean-build-17",
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

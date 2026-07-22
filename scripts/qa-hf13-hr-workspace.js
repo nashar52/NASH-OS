@@ -1,0 +1,16 @@
+'use strict';
+const fs = require('fs');
+const assert = require('assert');
+const app = fs.readFileSync('public/app.js','utf8');
+const css = fs.readFileSync('public/styles.css','utf8');
+const pkg = require('../package.json');
+assert(app.includes('async function hrOperationsWorkspace()'));
+assert(app.includes("hr_select: hrOperationsWorkspace"));
+assert(app.includes('/api/employees/summary'));
+assert(app.includes('/api/controls/summary'));
+assert(app.includes('HR OPERATING SYSTEM'));
+assert(css.includes('HF13 — HR Operations SaaS Workspace'));
+assert(pkg.nashCleanBuild.hf13HrWorkspaceActive === true);
+assert(pkg.nashCleanBuild.mysqlSchemaTouched === false);
+assert(pkg.nashCleanBuild.databaseDataTouched === false);
+console.log('qa:hf13-hr-workspace PASS');

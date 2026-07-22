@@ -1,0 +1,6 @@
+
+/* HF34 — organization-assigned access control */
+.login-role-policy,.assigned-role-card{border:1px solid rgba(54,213,255,.22);background:rgba(8,35,66,.72);border-radius:14px;padding:14px;display:grid;gap:5px}
+.login-role-policy strong,.assigned-role-card strong{color:#fff;font-size:.95rem}
+.login-role-policy span,.assigned-role-card span,.assigned-role-card small{color:#9eb7cf;font-size:.78rem;line-height:1.45}
+.role-identity-card{margin-top:8px}

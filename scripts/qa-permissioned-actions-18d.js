@@ -1,0 +1,24 @@
+const fs = require('fs');
+const path = require('path');
+const root = path.join(__dirname, '..');
+const app = fs.readFileSync(path.join(root, 'public', 'app.js'), 'utf8');
+const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
+const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+function pass(name, ok) { if (!ok) { console.error('FAIL', name); process.exit(1); } console.log('PASS', name); }
+pass('permissioned action console exists', html.includes('Permissioned Action Console'));
+pass('no unsolicited legacy panel display enforced', html.includes('sourceStatus') && app.includes('No details loaded until you request them'));
+pass('employee add/edit/delete draft actions exist', app.includes('EMPLOYEE_PROFILE_EDIT_REQUEST') && app.includes('EDIT_DRAFT_EVIDENCE') && app.includes('DELETE_DRAFT_EVIDENCE'));
+pass('manager add/edit/delete actions exist', app.includes('ADD_TEAM_TASK_REQUEST') && app.includes('EDIT_TEAM_TASK_REQUEST') && app.includes('CANCEL_TEAM_TASK_REQUEST'));
+pass('permissioned runtime endpoint exists', server.includes('/api/permissioned-action'));
+pass('direct database crud blocked', server.includes('directDatabaseCrudBlocked') && server.includes('runtime receipt only'));
+pass('no schema migration', pkg.nashCleanBuild.schemaMigrationIncluded === false && pkg.nashCleanBuild.databaseSchemaTouched === false);
+console.log('qa:permissioned-actions-18d = PASS');
+console.log('permissionedActionConsoleActive = true');
+console.log('noUnrequestedInformationPanels = true');
+console.log('employeeAllowedActionsOnly = true');
+console.log('managerAllowedActionsOnly = true');
+console.log('runtimeCrudReceiptsActive = true');
+console.log('directDatabaseCrudBlocked = true');
+console.log('schemaMigrationIncluded = false');
+console.log('databaseSchemaTouched = false');

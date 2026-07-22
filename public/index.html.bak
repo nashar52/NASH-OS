@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NASH OS — Final Operating Console / Permissioned Action Console</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell final-os-shell">
+    <aside class="sidebar">
+      <div class="brand-card nash-logo-card" aria-label="NASH OS logo">
+        <div class="nash-logo-mark"><span class="nash-logo-n">N</span><span class="nash-logo-circuit"></span></div>
+        <div class="nash-logo-text"><div class="brand-title">NASH <span>OS</span></div><div class="brand-subtitle">Decision Operating System</div></div>
+      </div>
+
+      <div class="side-section">
+        <div class="side-label">Workspace Role</div>
+        <select id="roleSelect" class="clean-select" aria-label="Workspace Role">
+          <option value="employee">Employee</option>
+          <option value="manager">Manager</option>
+          <option value="hr">HR Operations</option>
+          <option value="executive">Executive</option>
+        </select>
+      </div>
+
+      <nav class="side-nav" id="roleNav"></nav>
+
+      <div class="lock-card">
+        <span class="lock-dot"></span>
+        <strong>Final Gold Master</strong>
+        <small>Action-first UI. No data appears until requested. Add/Edit/Delete execute only within allowed permission boundaries and produce receipts.</small>
+      </div>
+    </aside>
+
+    <main class="main final-main">
+      <header class="hero final-hero">
+        <div>
+          <p class="eyebrow">NASH ENTERPRISE HR OPERATING SYSTEM</p>
+          <h1>NASH OS — Final Operating Console</h1>
+          <p class="hero-text">Choose a role, then execute a permitted command. The console does not preload employee data, dashboards, reports, or educational panels.</p>
+        </div>
+        <div class="hero-actions">
+          <button id="sourceStatusBtn" class="secondary-btn">Source Status</button>
+          <button id="ledgerBtn" class="secondary-btn">Action Ledger</button>
+          <button id="acceptanceBtn" class="secondary-btn">Final Acceptance</button>
+        </div>
+      </header>
+
+      <section id="sourceStatus" class="source-status hidden" aria-hidden="true"></section>
+
+      <section id="roleSurface" class="panel command-console"></section>
+      <section id="operationSurface" class="panel operation-surface hidden"></section>
+      <section id="ledgerSurface" class="panel receipt-surface hidden"></section>
+
+      <section id="finalAcceptancePanel" class="panel hidden" aria-hidden="true">
+        <div class="panel-header"><div><p class="eyebrow">Build 18 Final Layer</p><h2>Final Acceptance / Local Run Lock</h2></div></div>
+        <button id="loadFinalAcceptance" class="secondary-btn small">Load Final Acceptance</button>
+        <button id="runFinalAcceptance" class="secondary-btn small">Run Final Acceptance</button>
+        <button id="createFinalReceipt" class="secondary-btn small">Create Final Receipt</button>
+        <button id="exportFinalLockReport" class="secondary-btn small">Export Final Lock Report</button>
+        <button id="showFinalAcceptance" class="secondary-btn small">Show Final Acceptance</button>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
