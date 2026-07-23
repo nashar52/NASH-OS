@@ -71,6 +71,13 @@ function validIsoDate(value, field) {
   return text;
 }
 const runtimeTrainingPlans = []; // Build 09 training and development plans; no schema change
+// Learning & Talent sprint records are workflow packets, never shadow HR master data.
+// Employee identity and performance evidence are resolved from MySQL for each request.
+const learningTalent = { catalog: [], paths: [], assignments: [], certifications: [], developmentPlans: [], succession: [], talentPools: [], nineBox: [], mentoring: [], coaching: [] };
+const LEARNING_TALENT_LIMIT = 500;
+function talentRecord(collection, data) { const item = { id: `LT-${collection.slice(0,3).toUpperCase()}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`, status: 'PENDING_HUMAN_REVIEW', createdAt: new Date().toISOString(), ...data }; learningTalent[collection].unshift(item); if (learningTalent[collection].length > LEARNING_TALENT_LIMIT) learningTalent[collection].pop(); return item; }
+function talentActor(req) { return cleanText(req.body?.actor || req.get('X-NASH-ACTOR') || 'Authorized HR user', 'Actor', 120); }
+async function talentEmployee(employeeId) { const profile = await getProfileById(String(employeeId || '')); if (!profile) throw new Error('A valid MySQL employee selection is required.'); return profile; }
 const runtimeCompensationDecisions = []; // Build 10 compensation, payroll impact, WPS readiness decisions; no schema change
 const runtimeGovernmentActions = []; // Build 11 government relations and compliance decisions; no schema change
 const runtimeProcedureActions = []; // Build 12 HR procedures, JD/SOP enforcement decisions; no schema change
@@ -1272,6 +1279,48 @@ app.get('/api/training/plans/:employeeId', (req, res) => {
   const employeeId = String(req.params.employeeId || '');
   const plans = runtimeTrainingPlans.filter((x) => x.assignment?.employeeId === employeeId).slice(0, 50);
   res.json({ lock: LOCK, build: '09', plans, source: 'Clean Build 09 runtime training assignments; no schema change' });
+});
+
+
+// Enterprise Learning, Development & Succession Platform. Runtime workflow data is intentionally
+// separate from MySQL master tables; MySQL remains the sole source for employees and evidence.
+app.get('/api/learning-talent/dashboard', async (req, res) => {
+  try {
+    const source = await withConn(async (conn) => ({ counts: await safeCounts(conn) }));
+    const now = new Date().toISOString().slice(0, 10);
+    const expiring = learningTalent.certifications.filter(x => x.expiryDate && x.expiryDate <= new Date(Date.now() + 90 * 86400000).toISOString().slice(0,10));
+    res.json({ lock: LOCK, sourceOfTruth: 'mysql', source, metrics: { employees: source.counts.employees || 0, catalog: learningTalent.catalog.length, learningPaths: learningTalent.paths.length, mandatoryAssignments: learningTalent.assignments.filter(x => x.mandatory).length, certifications: learningTalent.certifications.length, expiringCertifications: expiring.length, developmentPlans: learningTalent.developmentPlans.length, successionPlans: learningTalent.succession.length, talentPools: learningTalent.talentPools.length, nineBoxAssessments: learningTalent.nineBox.length, mentoring: learningTalent.mentoring.length, coaching: learningTalent.coaching.length }, records: learningTalent, analytics: { completionRate: learningTalent.assignments.length ? Math.round(learningTalent.assignments.filter(x => x.status === 'COMPLETED').length / learningTalent.assignments.length * 100) : 0, readyNow: learningTalent.succession.filter(x => x.readiness === 'READY_NOW').length, highPotential: learningTalent.nineBox.filter(x => x.box === 'HIGH_POTENTIAL').length, certificationWatch: expiring.map(x => ({ id:x.id, employeeName:x.employeeName, certification:x.title, expiryDate:x.expiryDate, urgency:x.expiryDate < now ? 'EXPIRED' : 'EXPIRING' })) }, policy: { mysqlEmployeeSource: true, noSchemaChange: true, humanApprovalRequired: true, aiAdvisoryOnly: true } });
+  } catch (error) { res.status(503).json({ lock: LOCK, error: error.message }); }
+});
+
+app.get('/api/learning-talent/recommendations/:employeeId', async (req, res) => {
+  try { const profile = await talentEmployee(req.params.employeeId); const plan = await buildTrainingDevelopmentPlan(profile); res.json({ lock: LOCK, profile, gapAnalysis: plan.gaps, recommendations: plan.recommendedCourses, learningPath: plan.learningPath, aiExplanation: plan.aiExplanation, source: plan.source, humanApprovalRequired: true }); }
+  catch (error) { res.status(400).json({ lock: LOCK, error: error.message }); }
+});
+
+app.post('/api/learning-talent/:workflow', async (req, res) => {
+  try {
+    const workflow = String(req.params.workflow || ''); const actor = talentActor(req); const body = req.body || {}; let record; let profile = null;
+    const employeeWorkflows = new Set(['assignments','certifications','developmentPlans','succession','nineBox','mentoring','coaching']);
+    if (employeeWorkflows.has(workflow)) profile = await talentEmployee(body.employeeId);
+    const title = cleanText(body.title || body.name || body.role || body.focus, 'Title', 160);
+    if (workflow === 'catalog') record = talentRecord('catalog', { title, provider: cleanText(body.provider, 'Provider', 120), durationHours: Number(body.durationHours || 0), mandatory: Boolean(body.mandatory), competency: cleanText(body.competency, 'Competency', 120), actor });
+    else if (workflow === 'paths') record = talentRecord('paths', { title, targetRole: cleanText(body.targetRole, 'Target role', 120), competency: cleanText(body.competency, 'Competency', 120), dueDate: validIsoDate(body.dueDate, 'Due date'), actor });
+    else if (workflow === 'assignments') record = talentRecord('assignments', { employeeId:profile.id, employeeName:profile.displayName, title, mandatory:Boolean(body.mandatory), dueDate:validIsoDate(body.dueDate,'Due date'), evidence:cleanText(body.evidence,'Completion evidence',300), actor, status:'ASSIGNED' });
+    else if (workflow === 'certifications') record = talentRecord('certifications', { employeeId:profile.id, employeeName:profile.displayName, title, issuer:cleanText(body.issuer,'Issuer',120), issuedDate:validIsoDate(body.issuedDate,'Issued date'), expiryDate:validIsoDate(body.expiryDate,'Expiration date'), actor, status:'ACTIVE' });
+    else if (workflow === 'developmentPlans') record = talentRecord('developmentPlans', { employeeId:profile.id, employeeName:profile.displayName, title, objective:cleanText(body.objective,'Development objective',500), targetDate:validIsoDate(body.targetDate,'Target date'), actor, status:'DRAFT_FOR_HUMAN_APPROVAL' });
+    else if (workflow === 'succession') record = talentRecord('succession', { employeeId:profile.id, employeeName:profile.displayName, title, readiness: cleanText(body.readiness,'Readiness',40), criticalRole:cleanText(body.criticalRole,'Critical role',120), rationale:cleanText(body.rationale,'Readiness rationale',500), actor });
+    else if (workflow === 'talentPools') record = talentRecord('talentPools', { title, criteria:cleanText(body.criteria,'Pool criteria',500), owner:cleanText(body.owner,'Owner',120), actor });
+    else if (workflow === 'nineBox') record = talentRecord('nineBox', { employeeId:profile.id, employeeName:profile.displayName, title, performance:Number(body.performance), potential:Number(body.potential), box:cleanText(body.box,'Nine-box placement',60), rationale:cleanText(body.rationale,'Calibration rationale',500), actor });
+    else if (workflow === 'mentoring' || workflow === 'coaching') record = talentRecord(workflow, { employeeId:profile.id, employeeName:profile.displayName, title, mentorOrCoach:cleanText(body.mentorOrCoach,'Mentor or coach',120), cadence:cleanText(body.cadence,'Cadence',80), objective:cleanText(body.objective,'Objective',500), actor, status:'SCHEDULED_HUMAN_FOLLOW_UP' });
+    else throw new Error('Unsupported learning and talent workflow.');
+    const receipt = createReceipt(`LEARNING_TALENT_${workflow.toUpperCase()}_CREATED`, profile || { id:'HR', employeeCode:'HR', displayName:'HR Learning & Talent' }, { recordId:record.id, title:record.title, actor, source:'Runtime workflow receipt; MySQL master data unchanged' });
+    res.status(201).json({ lock: LOCK, ok:true, record, receipt, message:`${workflow} workflow created and routed for human review.` });
+  } catch (error) { res.status(400).json({ lock: LOCK, error:error.message }); }
+});
+
+app.post('/api/learning-talent/:workflow/:id/status', (req, res) => {
+  try { const workflow=String(req.params.workflow||''); const item=(learningTalent[workflow]||[]).find(x=>x.id===req.params.id); if(!item) throw new Error('Learning and talent workflow record was not found.'); const status=cleanText(req.body.status,'Status',60); if (!['COMPLETED','IN_REVIEW','APPROVED','CLOSED'].includes(status)) throw new Error('Unsupported controlled status.'); item.status=status; item.updatedAt=new Date().toISOString(); res.json({ lock:LOCK, ok:true, record:item, message:`Workflow marked ${status}.` }); } catch(error) { res.status(400).json({lock:LOCK,error:error.message}); }
 });
 
 function salaryNumber(value) {
