@@ -24,7 +24,6 @@ function securityArtifact(action, req, detail = {}) { const at = new Date().toIS
 function passwordPolicyError(password) { if (password.length < PASSWORD_POLICY.minLength) return `Password must be at least ${PASSWORD_POLICY.minLength} characters.`; if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password) || !/[^A-Za-z0-9]/.test(password)) return 'Password must include upper-case, lower-case, number, and symbol characters.'; return null; }
 
 app.use(express.json({ limit: '1mb' }));
-app.use((req, res, next) => { const key = `${req.ip || 'unknown'}:${req.path}`; const now = Date.now(); const item = apiAttempts.get(key) || { count: 0, startedAt: now }; if (now - item.startedAt > 60_000) { item.count = 0; item.startedAt = now; } item.count += 1; apiAttempts.set(key, item); res.set('RateLimit-Limit', '120'); res.set('RateLimit-Remaining', String(Math.max(0, 120 - item.count))); if (item.count > 120) { const artifact = securityArtifact('API_RATE_LIMITED', req, { path: req.path, ip: req.ip }); return res.status(429).json({ error: 'Rate limit exceeded.', ...artifact }); } next(); });
 app.use((req, res, next) => {
   const requestId = crypto.randomUUID();
   req.requestId = requestId;
@@ -42,6 +41,10 @@ app.use((req, res, next) => {
   }
   next();
 });
+// Apply request tracing and browser protections before rate limiting so rejected requests
+// carry the same correlation and security controls as successful requests.
+app.use((req, res, next) => { const key = `${req.ip || 'unknown'}:${req.path}`; const now = Date.now(); const item = apiAttempts.get(key) || { count: 0, startedAt: now }; if (now - item.startedAt > 60_000) { item.count = 0; item.startedAt = now; } item.count += 1; apiAttempts.set(key, item); res.set('RateLimit-Limit', '120'); res.set('RateLimit-Remaining', String(Math.max(0, 120 - item.count))); if (item.count > 120) { const artifact = securityArtifact('API_RATE_LIMITED', req, { path: req.path, ip: req.ip }); return res.status(429).json({ error: 'Rate limit exceeded.', ...artifact }); } next(); });
+
 app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false, maxAge: 0 }));
 
 const SAFE_TABLES = [
