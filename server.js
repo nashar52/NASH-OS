@@ -80,6 +80,16 @@ function talentActor(req) { return cleanText(req.body?.actor || req.get('X-NASH-
 async function talentEmployee(employeeId) { const profile = await getProfileById(String(employeeId || '')); if (!profile) throw new Error('A valid MySQL employee selection is required.'); return profile; }
 const runtimeCompensationDecisions = []; // Build 10 compensation, payroll impact, WPS readiness decisions; no schema change
 const runtimeGovernmentActions = []; // Build 11 government relations and compliance decisions; no schema change
+// Saudi Government Relations sprint: operational workflow packets are runtime-only.
+// MySQL remains the read-only system of record; this module never changes its schema or data.
+const complianceRuntime = { cases: [], tasks: [], approvals: [], evidence: [], fees: [], audit: [] };
+const COMPLIANCE_LIMIT = 500;
+const COMPLIANCE_ACTIONS = new Set(['CREATE_CASE', 'CREATE_TASK', 'REQUEST_EVIDENCE', 'REQUEST_APPROVAL', 'APPROVE', 'RETURN', 'REJECT', 'ESCALATE', 'PLACE_PAYROLL_HOLD', 'RELEASE_PAYROLL_HOLD', 'RECORD_FEE']);
+function complianceId(prefix) { return `${prefix}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`; }
+function complianceRecord(collection, record) { complianceRuntime[collection].unshift(record); if (complianceRuntime[collection].length > COMPLIANCE_LIMIT) complianceRuntime[collection].pop(); return record; }
+function complianceAudit(action, actor, detail = {}) { return complianceRecord('audit', { id: complianceId('GOV-AUD'), action, actor, detail, createdAt: new Date().toISOString(), source: 'Saudi compliance runtime ledger; MySQL source tables unchanged' }); }
+function complianceText(value, field, max = 500, required = true) { return cleanText(value, field, max, required); }
+function complianceDate(value, field, required = false) { return value ? validIsoDate(value, field) : (required ? validIsoDate(value, field) : null); }
 const runtimeProcedureActions = []; // Build 12 HR procedures, JD/SOP enforcement decisions; no schema change
 const runtimeUnifiedControlActions = []; // Build 13 unified approval, SLA, evidence, and audit control actions; no schema change
 const runtimeQualityGovernanceActions = []; // Build 14 quality checks, governance gates, control failures, and corrective actions; no schema change
@@ -1456,47 +1466,87 @@ async function buildGovernmentCase(profile) {
   };
 }
 
-app.get('/api/government/summary', async (req, res) => {
+app.get('/api/government/summary', requireSession(['hr', 'executive']), async (req, res) => {
   try {
     const payload = await withConn(async (conn) => ({
-      counts: await safeCounts(conn),
-      employeeColumns: await tableColumns(conn, 'employees'),
-      payrollColumns: await tableColumns(conn, 'payroll_cycles'),
-      approvalColumns: await tableColumns(conn, 'approval_requests'),
-      auditColumns: await tableColumns(conn, 'audit_trail'),
+      counts: await safeCounts(conn), employeeColumns: await tableColumns(conn, 'employees'), payrollColumns: await tableColumns(conn, 'payroll_cycles'),
+      approvalColumns: await tableColumns(conn, 'approval_requests'), auditColumns: await tableColumns(conn, 'audit_trail'),
       contractColumns: [...await tableColumns(conn, 'contracts'), ...await tableColumns(conn, 'contract_records')],
       complianceColumns: [...await tableColumns(conn, 'government_records'), ...await tableColumns(conn, 'compliance_alerts')]
     }));
-    res.json({ lock: LOCK, build: '11', governmentRelationsDecisionCenterActive: true, qiwaGosiMudadLinked: true, nitaqatSaudizationLinked: true, workPermitIqamaQueueActive: true, complianceToTaskApprovalEvidenceActive: true, payrollHoldControlActive: true, runtimeGovernmentActions: runtimeGovernmentActions.length, policy: { aiRiskRadarOnly: true, humanFinalDecisionRequired: true, noSchemaChange: true }, ...payload });
+    const openCases = complianceRuntime.cases.filter((item) => !['CLOSED', 'REJECTED'].includes(item.status));
+    const overdue = complianceRuntime.tasks.filter((item) => item.status !== 'COMPLETED' && item.dueDate && item.dueDate < new Date().toISOString().slice(0, 10));
+    res.json({ lock: LOCK, build: 'SAUDI_COMPLIANCE_01', governmentRelationsDecisionCenterActive: true, qiwaGosiMudadLinked: true, nitaqatSaudizationLinked: true, workPermitIqamaQueueActive: true, complianceToTaskApprovalEvidenceActive: true, payrollHoldControlActive: true, runtimeGovernmentActions: runtimeGovernmentActions.length, registers: { openCases: openCases.length, tasks: complianceRuntime.tasks.length, overdueTasks: overdue.length, pendingApprovals: complianceRuntime.approvals.filter((item) => item.status === 'PENDING').length, evidence: complianceRuntime.evidence.length, fees: complianceRuntime.fees.length }, policy: { mysqlSourceOfTruth: true, directMysqlMutation: false, humanFinalDecisionRequired: true, noSchemaChange: true, externalGovernmentSubmissionBlocked: true }, ...payload });
   } catch (error) { res.status(503).json({ lock: LOCK, error: error.message }); }
 });
 
-app.get('/api/government/case/:employeeId', async (req, res) => {
+app.get('/api/government/case/:employeeId', requireSession(['hr', 'executive']), async (req, res) => {
   try {
     const profile = await getProfileById(String(req.params.employeeId || ''));
     if (!profile) return res.status(400).json({ lock: LOCK, error: 'Controlled employee selection is required before government relations review.' });
     const governmentCase = await buildGovernmentCase(profile);
-    res.json({ lock: LOCK, build: '11', governmentCase, source: 'Build 11 government relations preview; no schema change' });
+    const related = complianceRuntime.cases.filter((item) => item.employeeId === profile.id).slice(0, 50);
+    res.json({ lock: LOCK, build: 'SAUDI_COMPLIANCE_01', governmentCase, related, source: 'MySQL employee source + runtime compliance workflow; no schema change' });
   } catch (error) { res.status(503).json({ lock: LOCK, error: error.message }); }
 });
 
-app.post('/api/government/action', async (req, res) => {
+app.get('/api/government/dashboard', requireSession(['hr', 'executive']), (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const activeCases = complianceRuntime.cases.filter((item) => !['CLOSED', 'REJECTED'].includes(item.status));
+  const expiring = [...activeCases, ...complianceRuntime.evidence].filter((item) => item.expiryDate && item.expiryDate >= today && item.expiryDate <= new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10));
+  res.json({ cases: complianceRuntime.cases.slice(0, 100), tasks: complianceRuntime.tasks.slice(0, 100), approvals: complianceRuntime.approvals.slice(0, 100), evidence: complianceRuntime.evidence.slice(0, 100), fees: complianceRuntime.fees.slice(0, 100), audit: complianceRuntime.audit.slice(0, 100), metrics: { activeCases: activeCases.length, expiringSoon: expiring.length, pendingApprovals: complianceRuntime.approvals.filter((item) => item.status === 'PENDING').length, breachedSla: complianceRuntime.tasks.filter((item) => item.dueDate && item.dueDate < today && item.status !== 'COMPLETED').length }, policy: { humanApprovalRequired: true, noExternalSubmission: true, mysqlSourceOfTruth: true } });
+});
+
+app.post('/api/government/cases', requireSession(['hr']), async (req, res) => {
+  try {
+    const body = req.body || {}; const profile = await getProfileById(String(body.employeeId || ''));
+    if (!profile) return res.status(400).json({ error: 'A valid MySQL employee selection is required.' });
+    const service = complianceText(body.service, 'Service', 80); const reference = complianceText(body.reference, 'Reference', 120);
+    const expiryDate = complianceDate(body.expiryDate, 'Expiry date'); const dueDate = complianceDate(body.dueDate, 'Due date') || expiryDate;
+    const allowedServices = ['QIWA_CONTRACT', 'WORK_PERMIT', 'IQAMA', 'GOSI', 'MUDAD_WPS', 'NITAQAT', 'LABOR_LAW', 'GOVERNMENT_FEE'];
+    if (!allowedServices.includes(service)) return res.status(400).json({ error: 'Service is not supported.' });
+    const item = complianceRecord('cases', { id: complianceId('GOV-CASE'), employeeId: profile.id, employeeName: profile.displayName, employeeCode: profile.employeeCode, service, reference, expiryDate, dueDate, owner: complianceText(body.owner || req.accessSession.email, 'Owner', 120), severity: ['LOW','MEDIUM','HIGH','CRITICAL'].includes(String(body.severity || '').toUpperCase()) ? String(body.severity).toUpperCase() : 'MEDIUM', status: 'OPEN', laborLawCheck: complianceText(body.laborLawCheck || 'Human legal review required', 'Labor law check', 300), createdAt: new Date().toISOString(), createdBy: req.accessSession.email, source: 'MySQL employee identity + runtime compliance case; no source-table mutation' });
+    const audit = complianceAudit('CASE_CREATED', req.accessSession.email, { caseId: item.id, service });
+    res.status(201).json({ item, audit, message: 'Compliance case created and routed for human review.' });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.post('/api/government/cases/:id/action', requireSession(['hr', 'executive']), async (req, res) => {
+  try {
+    const item = complianceRuntime.cases.find((entry) => entry.id === String(req.params.id)); if (!item) return res.status(404).json({ error: 'Compliance case not found.' });
+    const body = req.body || {}; const action = String(body.action || '').toUpperCase(); if (!COMPLIANCE_ACTIONS.has(action)) return res.status(400).json({ error: 'Unsupported compliance action.' });
+    const note = complianceText(body.note, 'Action note', 500, !['PLACE_PAYROLL_HOLD', 'RELEASE_PAYROLL_HOLD'].includes(action));
+    const now = new Date().toISOString(); let artifact = null;
+    if (action === 'CREATE_TASK') artifact = complianceRecord('tasks', { id: complianceId('GOV-TASK'), caseId: item.id, title: complianceText(body.title || `${item.service} remediation`, 'Task title', 160), owner: complianceText(body.owner || item.owner, 'Task owner', 120), dueDate: complianceDate(body.dueDate, 'Task due date', true), status: 'OPEN', slaHours: Math.min(Math.max(Number(body.slaHours || 48), 1), 720), createdAt: now });
+    if (action === 'REQUEST_EVIDENCE') artifact = complianceRecord('evidence', { id: complianceId('GOV-EVD'), caseId: item.id, title: complianceText(body.title || `${item.service} evidence`, 'Evidence title', 160), reference: complianceText(body.reference || note, 'Evidence reference', 240), expiryDate: complianceDate(body.expiryDate, 'Evidence expiry date'), status: 'REQUESTED', createdAt: now });
+    if (action === 'REQUEST_APPROVAL') artifact = complianceRecord('approvals', { id: complianceId('GOV-APR'), caseId: item.id, approver: complianceText(body.approver, 'Approver', 120), decision: 'PENDING', status: 'PENDING', requestedAt: now, dueDate: complianceDate(body.dueDate, 'Approval due date') });
+    if (action === 'RECORD_FEE') { const amount = Number(body.amount); if (!Number.isFinite(amount) || amount < 0 || amount > 100000000) return res.status(400).json({ error: 'Fee amount must be a valid non-negative amount.' }); artifact = complianceRecord('fees', { id: complianceId('GOV-FEE'), caseId: item.id, amount, currency: 'SAR', dueDate: complianceDate(body.dueDate, 'Fee due date', true), reference: complianceText(body.reference, 'Fee reference', 120), status: 'TRACKED', createdAt: now }); }
+    if (action === 'APPROVE') { item.status = 'APPROVED_HUMAN'; item.approvedAt = now; item.approvedBy = req.accessSession.email; }
+    if (action === 'RETURN') { item.status = 'RETURNED'; item.returnedAt = now; }
+    if (action === 'REJECT') { item.status = 'REJECTED'; item.rejectedAt = now; }
+    if (action === 'ESCALATE') { item.status = 'ESCALATED'; item.escalatedAt = now; item.escalationLevel = Math.min(Number(item.escalationLevel || 0) + 1, 3); }
+    if (action === 'PLACE_PAYROLL_HOLD') { item.payrollHold = true; item.status = 'PAYROLL_HOLD'; }
+    if (action === 'RELEASE_PAYROLL_HOLD') { item.payrollHold = false; item.status = 'OPEN'; }
+    const audit = complianceAudit(action, req.accessSession.email, { caseId: item.id, note, artifactId: artifact?.id || null });
+    res.json({ item, artifact, audit, message: `${action.replaceAll('_', ' ')} recorded. External Qiwa, GOSI, Mudad, Muqeem, and government submissions remain human-operated.` });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.post('/api/government/action', requireSession(['hr', 'executive']), async (req, res) => {
   try {
     const profile = await getProfileById(String(req.body.employeeId || ''));
     if (!profile) return res.status(400).json({ lock: LOCK, error: 'Controlled employee selection is required before government action.' });
-    const action = String(req.body.action || 'run_government_check');
+    const action = complianceText(req.body.action || 'RUN_GOVERNMENT_CHECK', 'Action', 80).toUpperCase();
     const governmentCase = await buildGovernmentCase(profile);
-    const receipt = createReceipt(`GOVERNMENT_${action.toUpperCase()}`, profile, { caseId: governmentCase.caseId, riskLevel: governmentCase.aiRiskRadar.riskLevel, payrollHold: governmentCase.readiness.payrollHold, aiRiskRadarOnly: true, humanFinalDecisionRequired: true, source: 'Clean Build 11 government relations action receipt; no schema change' });
-    runtimeGovernmentActions.unshift({ action, governmentCase, receipt, status: action.includes('approve') ? 'Approved by human reviewer - platform submission still external' : action.includes('reject') ? 'Rejected with reason required' : action.includes('hold_payroll') ? 'Payroll hold flagged pending evidence' : 'Recorded for government relations review' });
-    if (runtimeGovernmentActions.length > 300) runtimeGovernmentActions.pop();
-    res.json({ lock: LOCK, build: '11', ok: true, action, governmentCase, receipt, message: 'Government relations action recorded. AI flags risk only; human final decision remains required.' });
-  } catch (error) { res.status(503).json({ lock: LOCK, error: error.message }); }
+    const receipt = createReceipt(`GOVERNMENT_${action}`, profile, { caseId: governmentCase.caseId, riskLevel: governmentCase.aiRiskRadar.riskLevel, payrollHold: governmentCase.readiness.payrollHold, aiRiskRadarOnly: true, humanFinalDecisionRequired: true, source: 'Saudi compliance action receipt; no schema change' });
+    runtimeGovernmentActions.unshift({ action, governmentCase, receipt, status: 'Recorded for authorized human review', createdAt: new Date().toISOString() }); if (runtimeGovernmentActions.length > 300) runtimeGovernmentActions.pop();
+    res.json({ lock: LOCK, build: 'SAUDI_COMPLIANCE_01', ok: true, action, governmentCase, receipt, message: 'Government readiness check recorded. Human final decision remains required.' });
+  } catch (error) { res.status(400).json({ lock: LOCK, error: error.message }); }
 });
 
-app.get('/api/government/actions/:employeeId', (req, res) => {
-  const employeeId = String(req.params.employeeId || '');
-  const actions = runtimeGovernmentActions.filter((x) => x.governmentCase?.profile?.id === employeeId || x.receipt?.employeeId === employeeId).slice(0, 50);
-  res.json({ lock: LOCK, build: '11', actions, source: 'Clean Build 11 runtime government relations actions; no schema change' });
+app.get('/api/government/actions/:employeeId', requireSession(['hr', 'executive']), (req, res) => {
+  const employeeId = String(req.params.employeeId || ''); const actions = runtimeGovernmentActions.filter((entry) => entry.governmentCase?.profile?.id === employeeId || entry.receipt?.employeeId === employeeId).slice(0, 50);
+  res.json({ lock: LOCK, build: 'SAUDI_COMPLIANCE_01', actions, source: 'Runtime government action ledger; MySQL source tables unchanged' });
 });
 
 app.get('/api/self-service/summary', async (req, res) => {

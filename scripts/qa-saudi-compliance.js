@@ -1,0 +1,15 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const root = path.join(__dirname, '..');
+const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+const app = fs.readFileSync(path.join(root, 'public/app.js'), 'utf8');
+for (const route of ['/api/government/dashboard', '/api/government/cases', '/api/government/cases/:id/action']) assert(server.includes(route), `missing ${route}`);
+for (const feature of ['QIWA_CONTRACT', 'WORK_PERMIT', 'IQAMA', 'GOSI', 'MUDAD_WPS', 'NITAQAT', 'LABOR_LAW', 'GOVERNMENT_FEE', 'CREATE_TASK', 'REQUEST_EVIDENCE', 'REQUEST_APPROVAL', 'ESCALATE']) assert(server.includes(feature), `missing ${feature}`);
+assert(server.includes('mysqlSourceOfTruth: true'));
+assert(server.includes('directMysqlMutation: false'));
+assert(!/(CREATE TABLE|ALTER TABLE|DROP TABLE|TRUNCATE TABLE)/i.test(server));
+assert(app.includes('governmentComplianceWorkspace'));
+assert(app.includes('Saudi Government Relations & Compliance'));
+console.log('qa:saudi-compliance = PASS');
