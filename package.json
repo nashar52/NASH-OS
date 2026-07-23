@@ -61,7 +61,8 @@
     "qa:hf30": "node scripts/qa-hf30.js",
     "qa:hf31": "node scripts/qa-hf31.js",
     "qa:hf32": "node scripts/qa-hf32.js",
-    "qa:hf34": "node scripts/qa-hf34.js"
+    "qa:hf34": "node scripts/qa-hf34.js",
+    "qa:security-boundaries": "node scripts/qa-security-boundaries.js"
   },
   "dependencies": {
     "express": "^4.19.2",
