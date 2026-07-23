@@ -73,7 +73,8 @@
     "qa:saudi-compliance": "node scripts/qa-saudi-compliance.js",
     "qa:sprint11": "node scripts/qa-sprint11-executive-ai.js",
     "qa:sprint12": "node scripts/qa-sprint12-enterprise-security.js",
-    "qa:sprint13": "node scripts/qa-sprint13-gold-master-candidate.js"
+    "qa:sprint13": "node scripts/qa-sprint13-gold-master-candidate.js",
+    "qa:post-gold-master-operational": "node scripts/qa-post-gold-master-operational.js"
   },
   "dependencies": {
     "express": "^4.19.2",
