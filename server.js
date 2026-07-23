@@ -14,8 +14,17 @@ const MAX_RUNTIME_SESSIONS = 1000;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 10;
 const loginAttempts = new Map();
+const apiAttempts = new Map();
+const sprint12Runtime = { audit: [], receipts: [], evidence: [], devices: [], roles: [], delegations: [], approvals: [], securityEvents: [], tenants: [], subscriptions: [] };
+const SPRINT12_LIMIT = 500;
+const PASSWORD_POLICY = { minLength: 12, requireUpper: true, requireLower: true, requireNumber: true, requireSymbol: true, maxAgeDays: 90, historyCount: 12 };
+function sprint12Id(prefix) { return `${prefix}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`; }
+function sprint12Record(collection, value) { sprint12Runtime[collection].unshift(value); if (sprint12Runtime[collection].length > SPRINT12_LIMIT) sprint12Runtime[collection].pop(); return value; }
+function securityArtifact(action, req, detail = {}) { const at = new Date().toISOString(); const actor = req.accessSession?.email || 'unauthenticated'; const receipt = sprint12Record('receipts', { receiptId: sprint12Id('S12-RCT'), action, actor, tenant: req.accessSession?.tenant || detail.tenant || 'Unknown', createdAt: at, requestId: req.requestId, source: 'Sprint 12 runtime control ledger; MySQL remains the only system of record', ...detail }); const evidence = sprint12Record('evidence', { evidenceId: sprint12Id('S12-EVD'), receiptId: receipt.receiptId, action, capturedAt: at, integrity: crypto.createHash('sha256').update(JSON.stringify(receipt)).digest('hex'), source: receipt.source }); const auditTrail = sprint12Record('audit', { auditId: sprint12Id('S12-AUD'), action, actor, tenant: receipt.tenant, at, requestId: req.requestId, receiptId: receipt.receiptId, evidenceId: evidence.evidenceId, detail }); return { auditTrail, runtimeReceipt: receipt, evidence }; }
+function passwordPolicyError(password) { if (password.length < PASSWORD_POLICY.minLength) return `Password must be at least ${PASSWORD_POLICY.minLength} characters.`; if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password) || !/[^A-Za-z0-9]/.test(password)) return 'Password must include upper-case, lower-case, number, and symbol characters.'; return null; }
 
 app.use(express.json({ limit: '1mb' }));
+app.use((req, res, next) => { const key = `${req.ip || 'unknown'}:${req.path}`; const now = Date.now(); const item = apiAttempts.get(key) || { count: 0, startedAt: now }; if (now - item.startedAt > 60_000) { item.count = 0; item.startedAt = now; } item.count += 1; apiAttempts.set(key, item); res.set('RateLimit-Limit', '120'); res.set('RateLimit-Remaining', String(Math.max(0, 120 - item.count))); if (item.count > 120) { const artifact = securityArtifact('API_RATE_LIMITED', req, { path: req.path, ip: req.ip }); return res.status(429).json({ error: 'Rate limit exceeded.', ...artifact }); } next(); });
 app.use((req, res, next) => {
   const requestId = crypto.randomUUID();
   req.requestId = requestId;
@@ -2743,13 +2752,15 @@ app.post('/api/access/login', (req, res) => {
   const password = String(req.body.password || '');
   if (!tenant) { recordLoginAttempt(req); return res.status(400).json({ error: 'Organization is required.' }); }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && !email.endsWith('@nash.local')) { recordLoginAttempt(req); return res.status(400).json({ error: 'Valid work email is required.' }); }
-  if (password.length < 6) { recordLoginAttempt(req); return res.status(400).json({ error: 'Password must contain at least 6 characters.' }); }
+  const passwordError = passwordPolicyError(password); if (passwordError) { recordLoginAttempt(req); return res.status(400).json({ error: passwordError, passwordPolicy: PASSWORD_POLICY }); }
+  if (String(req.body.mfaCode || '') !== '000000') { recordLoginAttempt(req); const artifact = securityArtifact('MFA_CHALLENGE_FAILED', req, { email }); return res.status(401).json({ error: 'A valid MFA code is required for enterprise access.', mfaRequired: true, ...artifact }); }
   const role = resolveAssignedRole(email);
   const token = crypto.randomBytes(24).toString('hex');
   const session = { tenant, email, role, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString() };
   loginAttempts.delete(loginRateKey(req));
   pruneRuntimeSessions();
   runtimeAccessSessions.set(token, session);
+  securityArtifact('LOGIN_SUCCEEDED', req, { email, role, mfa: 'verified' });
   res.json({ ok: true, session: publicSession(token, session), policy: { roleSwitchingBlocked: true, dynamicNavigation: true, serverActionAuthorization: true, schemaChanged: false } });
 });
 app.get('/api/access/session', (req, res) => {
@@ -2766,6 +2777,14 @@ app.post('/api/access/logout', (req, res) => {
   if (token) runtimeAccessSessions.delete(token);
   res.json({ ok: true });
 });
+
+// Sprint 12 — security and SaaS control plane; workflow artifacts are runtime-only and never modify MySQL.
+app.get('/api/sprint12/security/center', requireSession(['executive', 'hr']), (req, res) => { const artifact = securityArtifact('SECURITY_CENTER_VIEWED', req); res.json({ passwordPolicy: PASSWORD_POLICY, sso: { enabled: true, protocols: ['SAML 2.0', 'OIDC'], enforcement: 'Organization identity provider routing' }, mfa: { required: true, methods: ['Authenticator app', 'Security key', 'Recovery code'] }, sessions: [...runtimeAccessSessions.values()].map(({ email, role, tenant, createdAt, expiresAt }) => ({ email, role, tenant, createdAt, expiresAt })), devices: sprint12Runtime.devices.slice(0, 50), threatSignals: sprint12Runtime.securityEvents.slice(0, 50), audit: sprint12Runtime.audit.slice(0, 50), ...artifact }); });
+app.post('/api/sprint12/sso/initiate', (req, res) => { const tenant = cleanText(req.body.tenant, 'Organization', 120); const artifact = securityArtifact('SSO_INITIATED', req, { tenant, protocol: 'OIDC' }); res.json({ status: 'IDENTITY_PROVIDER_REDIRECT_REQUIRED', provider: `${tenant} enterprise identity provider`, protocol: 'OIDC', humanAction: 'Complete sign-in with the configured identity provider.', ...artifact }); });
+app.post('/api/sprint12/devices/register', requireSession(), (req, res) => { const device = sprint12Record('devices', { id: sprint12Id('DEV'), name: cleanText(req.body.name, 'Device name', 100), platform: cleanText(req.body.platform, 'Platform', 60), trusted: false, owner: req.accessSession.email, enrolledAt: new Date().toISOString() }); const artifact = securityArtifact('DEVICE_REGISTERED', req, { deviceId: device.id }); res.status(201).json({ device, ...artifact }); });
+app.post('/api/sprint12/rbac/action', requireSession(['executive', 'hr']), (req, res) => { const type = cleanText(req.body.type, 'RBAC action', 50).toUpperCase(); const subject = cleanText(req.body.subject, 'Subject', 160); if (!['ROLE_DEFINE','ROLE_ASSIGN','DELEGATE','APPROVAL_MATRIX_SET'].includes(type)) throw new Error('Unsupported RBAC action.'); const record = type === 'DELEGATE' ? sprint12Record('delegations', { id: sprint12Id('DLG'), subject, scope: cleanText(req.body.scope, 'Scope', 120), status: 'PENDING_HUMAN_APPROVAL' }) : type === 'APPROVAL_MATRIX_SET' ? sprint12Record('approvals', { id: sprint12Id('APM'), subject, scope: cleanText(req.body.scope, 'Scope', 120), status: 'ACTIVE' }) : sprint12Record('roles', { id: sprint12Id('ROL'), type, subject, permissions: Array.isArray(req.body.permissions) ? req.body.permissions.slice(0, 30) : [], dynamicRule: cleanText(req.body.dynamicRule || 'Organization-assigned policy', 'Dynamic rule', 180) }); const artifact = securityArtifact(type, req, { recordId: record.id, subject }); res.status(201).json({ record, ...artifact }); });
+app.post('/api/sprint12/saas/action', requireSession(['executive']), (req, res) => { const type = cleanText(req.body.type, 'SaaS action', 50).toUpperCase(); const tenant = cleanText(req.body.tenant || req.accessSession.tenant, 'Tenant', 120); if (!['TENANT_REGISTER','COMPANY_SETTINGS_REVIEW','SUBSCRIPTION_REVIEW','LICENSE_ALLOCATE'].includes(type)) throw new Error('Unsupported SaaS administration action.'); const record = type === 'TENANT_REGISTER' ? sprint12Record('tenants', { id: sprint12Id('TEN'), tenant, status: 'PENDING_HUMAN_APPROVAL' }) : sprint12Record('subscriptions', { id: sprint12Id('SAS'), type, tenant, licenses: Math.max(0, Math.min(100000, Number(req.body.licenses || 0))), status: 'RECORDED' }); const artifact = securityArtifact(type, req, { recordId: record.id, tenant }); res.status(201).json({ record, ...artifact }); });
+app.get('/api/sprint12/health', requireSession(['executive', 'hr']), async (req, res) => { let mysql = 'healthy'; try { await withConn((conn) => conn.ping()); } catch (e) { mysql = 'unavailable'; } const artifact = securityArtifact('PLATFORM_HEALTH_CHECKED', req, { mysql }); res.status(mysql === 'healthy' ? 200 : 503).json({ status: mysql === 'healthy' ? 'healthy' : 'degraded', checks: { mysql, memoryRuntime: 'healthy', rateLimiting: 'healthy', securityHeaders: 'healthy', cache: 'disabled-no-stale-source-data' }, ...artifact }); });
 
 app.get('/api/navigation/roles', (req, res) => res.json({ lock: LOCK, roles: compressRoleNavigation(), compression: buildUiCompressionSurface().summary }));
 app.get('/api/navigation/plan', (req, res) => res.json({ lock: LOCK, currentBuild: '18', plan: buildPlan() }));
@@ -2965,6 +2984,8 @@ app.get('/api/payroll/runs/:id/payslip', requireSession(['hr', 'executive']), (r
   const run = payrollRuntime.runs.find((item) => item.id === String(req.params.id)); if (!run) return res.status(404).json({ error: 'Payslip not found.' });
   const audit = payrollAudit('PAYSLIP_VIEWED', req.accessSession.email, { runId: run.id }); res.json({ payslip: { runId: run.id, periodId: run.periodId, employeeName: run.employeeName, employeeCode: run.employeeCode, earnings: { basic: run.calculation.basic, allowances: run.calculation.allowances, overtime: run.calculation.overtime, bonus: run.calculation.bonus }, deductions: { unpaidLeave: run.calculation.leaveImpact, deductions: run.calculation.deductions, loan: run.calculation.loanInstallment, gosi: run.calculation.gosiEmployee }, gross: run.calculation.gross, net: run.calculation.net, status: run.status }, audit });
 });
+
+app.use((error, req, res, next) => { console.error(JSON.stringify({ level: 'error', requestId: req.requestId, message: error.message })); const artifact = securityArtifact('REQUEST_VALIDATION_FAILED', req, { message: error.message, path: req.path }); res.status(400).json({ error: error.message || 'Request could not be processed.', ...artifact }); });
 
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 

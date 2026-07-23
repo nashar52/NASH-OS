@@ -1,6 +1,6 @@
 {
   "name": "nash-os-final-operating-system-gold-master",
-  "version": "32.0.0-sprint11-executive-ai-analytics",
+  "version": "33.0.0-sprint12-enterprise-security",
   "description": "NASH OS HF34 organization-assigned role access with dynamic navigation and server-enforced action permissions",
   "main": "server.js",
   "scripts": {
@@ -71,7 +71,8 @@
     "qa:recruitment-ats": "node scripts/qa-recruitment-ats.js",
     "qa:sprint10-self-service": "node scripts/qa-sprint10-self-service.js",
     "qa:saudi-compliance": "node scripts/qa-saudi-compliance.js",
-    "qa:sprint11": "node scripts/qa-sprint11-executive-ai.js"
+    "qa:sprint11": "node scripts/qa-sprint11-executive-ai.js",
+    "qa:sprint12": "node scripts/qa-sprint12-enterprise-security.js"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -369,7 +370,11 @@
     "employeeLifecycleTimelineActive": true,
     "employeeLinkedActionLedgerActive": true,
     "employeeAiHumanBoundaryVisible": true,
-    "noDatabaseSchemaChangeHF31": true
+    "noDatabaseSchemaChangeHF31": true,
+    "sprint12EnterpriseSecurityIdentityActive": true,
+    "sprint12AuditEvidenceReceiptActive": true,
+    "sprint12NoSchemaChange": true,
+    "mysqlOnlySourceOfTruth": true
   },
   "nashRelease": {
     "hf32FixedDistinctApps": true

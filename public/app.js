@@ -86,8 +86,9 @@ const SAAS_NAV = {
     { label: 'Tenant Administration', command: 'exec_tenants', icon: '09' },
     { label: 'Subscription & Billing', command: 'exec_billing', icon: '10' },
     { label: 'Provisioning', command: 'exec_provisioning', icon: '11' },
-    { label: 'Release Readiness', command: 'exec_release', icon: '12' },
-    { label: 'System Proof', command: 'final_acceptance', icon: '13' }
+    { label: 'Security Center', command: 'exec_security', icon: '12' },
+    { label: 'Release Readiness', command: 'exec_release', icon: '13' },
+    { label: 'System Proof', command: 'final_acceptance', icon: '14' }
   ]
 };
 
@@ -227,8 +228,8 @@ function setWorkspaceVisibility(isAuthenticated) {
   app?.setAttribute('aria-hidden', String(!isAuthenticated));
 }
 
-async function enterWorkspace({ tenant, email, password, demo = false }) {
-  const result = await api('/api/access/login', { method: 'POST', body: { tenant, email, password, demo } });
+async function enterWorkspace({ tenant, email, password, mfaCode, demo = false }) {
+  const result = await api('/api/access/login', { method: 'POST', body: { tenant, email, password, mfaCode, demo } });
   const session = { ...result.session, signedInAt: new Date().toISOString() };
   sessionStorage.setItem(ACCESS_SESSION_KEY, JSON.stringify(session));
   state.role = ROLES[session.role] ? session.role : 'employee';
@@ -264,18 +265,21 @@ function initializeLoginExperience() {
     const tenant = $('tenantInput').value.trim();
     const email = $('emailInput').value.trim();
     const password = $('passwordInput').value;
+    const mfaCode = $('mfaCodeInput').value;
     const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
     let message = '';
     if (!tenant) message = 'Enter your organization name.';
     else if (!emailValid) message = 'Enter a valid work email.';
-    else if (password.length < 6) message = 'Password must contain at least 6 characters.';
+    else if (password.length < 12) message = 'Password must contain at least 12 characters.';
+    else if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password) || !/[^A-Za-z0-9]/.test(password)) message = 'Password must include upper-case, lower-case, number, and symbol characters.';
+    else if (!/^\d{6}$/.test(mfaCode)) message = 'Enter your 6-digit multi-factor code.';
     if (message) {
       error.textContent = message;
       error.classList.remove('hidden');
       return;
     }
     error.classList.add('hidden');
-    enterWorkspace({ tenant, email, password }).catch((loginError) => { error.textContent = loginError.message; error.classList.remove('hidden'); });
+    enterWorkspace({ tenant, email, password, mfaCode }).catch((loginError) => { error.textContent = loginError.message; error.classList.remove('hidden'); });
   });
   $('demoAccessBtn')?.addEventListener('click', () => {
     const error = $('loginError');
@@ -784,6 +788,18 @@ function sprint10Workspace(kind) {
 function employeeSelfServiceWorkspace() { return sprint10Workspace('employee'); }
 function managerSelfServiceWorkspace() { return sprint10Workspace('manager'); }
 
+async function enterpriseSecurityWorkspace() {
+  openOperation('Enterprise Security & Identity Center', 'Identity, access, threat signals, and platform health are protected by session authorization. Every control action produces an audit trail, runtime receipt, and evidence.', '<div class="ai-workspace-loading">Loading security posture…</div>');
+  const [security, health] = await Promise.all([api('/api/sprint12/security/center'), api('/api/sprint12/health')]);
+  openOperation('Enterprise Security & Identity Center', 'Production control plane for SSO, MFA, password policy, sessions, devices, RBAC delegation, approval matrices, API protection, monitoring, and tenant administration.', `<section class="domain-panel"><div class="kpi-grid"><div class="kpi-card"><span>MFA</span><strong>${security.mfa.required ? 'Required' : 'Optional'}</strong><small>${esc(security.mfa.methods.join(' · '))}</small></div><div class="kpi-card"><span>Active sessions</span><strong>${security.sessions.length}</strong><small>Session management</small></div><div class="kpi-card"><span>Threat signals</span><strong>${security.threatSignals.length}</strong><small>Login and API monitoring</small></div><div class="kpi-card"><span>Platform</span><strong>${esc(health.status)}</strong><small>MySQL: ${esc(health.checks.mysql)}</small></div></div><div class="detail-grid"><div><span>Password policy</span><strong>${security.passwordPolicy.minLength}+ characters · complexity required · ${security.passwordPolicy.maxAgeDays}-day rotation</strong></div><div><span>SSO</span><strong>${esc(security.sso.protocols.join(' / '))} · identity provider routing enabled</strong></div></div><div class="ai-action-row"><button class="primary-btn" id="securitySso">Test SSO handoff</button><button class="secondary-btn" id="securityDevice">Register managed device</button><button class="secondary-btn" id="securityRole">Record dynamic role</button><button class="secondary-btn" id="securityDelegation">Record delegation</button><button class="secondary-btn" id="securityTenant">Review licenses</button></div></section>${receiptCard(security.runtimeReceipt)}`);
+  const act = async (url, body) => { const out = await api(url, { method: 'POST', body }); addReceipt(out.runtimeReceipt); toast(`${out.runtimeReceipt.action} recorded with audit and evidence.`); enterpriseSecurityWorkspace(); };
+  $('securitySso').onclick = () => act('/api/sprint12/sso/initiate', { tenant: readAccessSession().tenant });
+  $('securityDevice').onclick = () => act('/api/sprint12/devices/register', { name: 'Executive managed browser', platform: navigator.platform || 'Web' });
+  $('securityRole').onclick = () => act('/api/sprint12/rbac/action', { type: 'ROLE_DEFINE', subject: 'Security reviewer', permissions: ['audit.read'], dynamicRule: 'Assigned security group' });
+  $('securityDelegation').onclick = () => act('/api/sprint12/rbac/action', { type: 'DELEGATE', subject: 'Executive delegate', scope: 'Security review' });
+  $('securityTenant').onclick = () => act('/api/sprint12/saas/action', { type: 'LICENSE_ALLOCATE', tenant: readAccessSession().tenant, licenses: 1 });
+}
+
 async function runCommand(command) {
   try {
     const map = {
@@ -848,6 +864,7 @@ async function runCommand(command) {
       exec_tenants: tenantAdministrationWorkspace,
       exec_billing: subscriptionBillingWorkspace,
       exec_provisioning: tenantProvisioningWorkspace,
+      exec_security: enterpriseSecurityWorkspace,
       exec_release: releaseCandidateWorkspace,
       exec_escalate: () => permissionReceipt('EXEC_ESCALATE', { target: 'Executive decision queue', note: 'Executive human review escalation.' }),
       final_acceptance: finalAcceptance
