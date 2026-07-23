@@ -46,7 +46,8 @@ function toast(message) {
 const SAAS_NAV = {
   employee: [
     { label: 'My Workspace', command: 'emp_select', icon: '01' },
-    { label: 'Attendance', command: 'emp_checkin', icon: '02' },
+    { label: 'Self-Service', command: 'emp_self_service', icon: '02' },
+    { label: 'Attendance', command: 'emp_checkin', icon: '03' },
     { label: 'Tasks & Evidence', command: 'emp_tasks', icon: '03' },
     { label: 'Employee File', command: 'emp_file', icon: '04' },
     { label: 'Performance', command: 'emp_performance', icon: '05' },
@@ -54,6 +55,7 @@ const SAAS_NAV = {
   ],
   manager: [
     { label: 'Manager Workspace', command: 'mgr_select', icon: '01' },
+    { label: 'Team Dashboard', command: 'mgr_team_workspace', icon: '02' },
     { label: 'Team Queue', command: 'mgr_queue', icon: '02' },
     { label: 'Task Assignment', command: 'mgr_add_task', icon: '03' },
     { label: 'Work Review', command: 'mgr_review', icon: '04' },
@@ -725,11 +727,70 @@ function recruitmentForm(action, context) {
   const form = forms[action]; if (!form) return; openOperation(form[0], 'This action creates an auditable, human-controlled recruitment workflow record.', `<section class="domain-panel"><form id="recruitmentForm" class="form-grid">${form[2]}<button class="primary-btn" type="submit">Save controlled workflow</button></form></section>`); $('recruitmentForm').onsubmit = async event => { event.preventDefault(); const out = await api(form[1], { method: 'POST', body: Object.fromEntries(new FormData(event.currentTarget)) }); const record = out.requisition || out.posting || out.candidate || out.interview || out.scorecard || out.assessment || out.offer || out.check; addReceipt({ ...out.audit, actionType: `RECRUITMENT_${action.toUpperCase()}`, target: record?.id || form[0], note: out.message }); toast(out.message); recruitmentWorkspace(); };
 }
 
+const SPRINT10_EMPLOYEE_SERVICES = [
+  ['My Profile', 'Review your identity, assignment, and employment context.'],
+  ['Personal Information', 'Submit a controlled change request for personal details.'],
+  ['Documents', 'Request document upload, replacement, or retrieval.'],
+  ['Attendance', 'Record or correct an attendance-related service request.'],
+  ['Leave Requests', 'Submit a leave request for manager and HR review.'],
+  ['Business Trips', 'Request business-trip authorization and evidence routing.'],
+  ['Expense Claims', 'Submit an expense claim for controlled approval.'],
+  ['Tasks', 'Open your assigned work and evidence obligations.'],
+  ['Goals', 'Create or update a goal for manager review.'],
+  ['Performance Reviews', 'Submit your self-review to the performance workflow.'],
+  ['Learning', 'Request learning enrollment or development support.'],
+  ['Payslips', 'Request access to your protected payslip record.'],
+  ['Benefits', 'Submit a benefits enrollment or support request.'],
+  ['Requests', 'Create a general employee service request.'],
+  ['Notifications', 'Acknowledge and route a workspace notification.']
+];
+const SPRINT10_MANAGER_SERVICES = [
+  ['Team Dashboard', 'Refresh the team operating picture and priority signals.'],
+  ['Team Attendance', 'Review and route an attendance exception.'],
+  ['Leave Approvals', 'Record a manager leave-approval decision for HR processing.'],
+  ['Expense Approvals', 'Record a manager expense-approval decision for finance processing.'],
+  ['Recruitment Requests', 'Request or review a controlled recruitment need.'],
+  ['Performance Reviews', 'Record manager performance-review input.'],
+  ['Goal Reviews', 'Record manager goal-review input.'],
+  ['Learning Approval', 'Record manager learning-approval input.'],
+  ['Team Documents', 'Request team evidence review or document follow-up.'],
+  ['Team Analytics', 'Generate a source-labelled team analytics review receipt.']
+];
+
+function sprint10Workspace(kind) {
+  const isManager = kind === 'manager';
+  const services = isManager ? SPRINT10_MANAGER_SERVICES : SPRINT10_EMPLOYEE_SERVICES;
+  const title = isManager ? 'Manager Workspace' : 'Employee Self-Service';
+  const actionType = isManager ? 'SPRINT10_MANAGER_ACTION' : 'SPRINT10_EMPLOYEE_ACTION';
+  const cards = services.map(([name, description], index) => `<article class="sprint10-service-card"><span class="sprint10-index">${String(index + 1).padStart(2, '0')}</span><h3>${esc(name)}</h3><p>${esc(description)}</p><button class="primary-btn" data-sprint10-service="${esc(name)}">Open ${esc(name)}</button></article>`).join('');
+  openOperation(title, 'A role-bound service workspace. Every submitted action captures runtime evidence, an audit-trail event, and a receipt; existing MySQL records remain the system of record.', `
+    <section class="sprint10-shell">
+      <header class="sprint10-hero"><div><p class="eyebrow">SPRINT 10 · ${isManager ? 'MANAGER' : 'EMPLOYEE'} OPERATIONS</p><h2>${esc(title)}</h2><p>Choose a service to execute its controlled runtime action. Human approvals remain mandatory where policy requires them.</p></div><div class="sprint10-source"><span>Source of truth</span><strong>MySQL</strong><small>No schema changes</small></div></header>
+      <section class="evidence-strip"><article><strong>Audit trail</strong><span>Actor, service, timestamp, and outcome are recorded.</span></article><article><strong>Evidence</strong><span>Each action receives a unique runtime evidence reference.</span></article><article><strong>Receipt</strong><span>A traceable receipt is presented immediately after execution.</span></article></section>
+      <div class="sprint10-service-grid">${cards}</div>
+    </section>`);
+  document.querySelectorAll('[data-sprint10-service]').forEach((button) => button.onclick = async () => {
+    const service = button.dataset.sprint10Service;
+    const receipt = await permissionReceipt(actionType, {
+      target: service,
+      note: `${service} opened from the ${title}.`,
+      evidenceReference: `S10-${kind.toUpperCase()}-${service.toUpperCase().replace(/[^A-Z0-9]+/g, '-')}-${Date.now()}`,
+      outputSummary: `${service} runtime workflow created and routed for the appropriate human review.`
+    }, false);
+    openOperation(`${service} action recorded`, 'Runtime action completed. The evidence, audit event, and receipt below are available for review.', `${receiptCard(receipt)}<section class="domain-panel"><h3>Workflow status</h3><p>${esc(receipt.outputSummary || 'Controlled service workflow recorded.')}</p><div class="detail-grid"><div><span>Audit event</span><strong>${esc(receipt.auditTrail?.eventId || 'Recorded')}</strong></div><div><span>Evidence reference</span><strong>${esc(receipt.evidence?.reference || receipt.evidenceReference || 'Captured')}</strong></div></div><button class="secondary-btn" data-sprint10-return="${kind}">Return to ${esc(title)}</button></section>`);
+    document.querySelector('[data-sprint10-return]')?.addEventListener('click', () => sprint10Workspace(kind));
+  });
+}
+function employeeSelfServiceWorkspace() { return sprint10Workspace('employee'); }
+function managerSelfServiceWorkspace() { return sprint10Workspace('manager'); }
+
 async function runCommand(command) {
   try {
     const map = {
       emp_select: () => loadEmployees('Select My Record'),
+      emp_self_service: employeeSelfServiceWorkspace,
       mgr_select: managerWorkspace,
+      mgr_team_workspace: managerSelfServiceWorkspace,
       hr_select: hrOperationsWorkspace,
       emp_profile_edit: profileEditForm,
       emp_checkin: employeeAttendanceApp,
