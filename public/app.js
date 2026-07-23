@@ -228,8 +228,8 @@ function setWorkspaceVisibility(isAuthenticated) {
   app?.setAttribute('aria-hidden', String(!isAuthenticated));
 }
 
-async function enterWorkspace({ tenant, email, password, mfaCode, demo = false }) {
-  const result = await api('/api/access/login', { method: 'POST', body: { tenant, email, password, mfaCode, demo } });
+async function enterWorkspace({ tenant, email, password, mfaCode }) {
+  const result = await api('/api/access/login', { method: 'POST', body: { tenant, email, password, mfaCode } });
   const session = { ...result.session, signedInAt: new Date().toISOString() };
   sessionStorage.setItem(ACCESS_SESSION_KEY, JSON.stringify(session));
   state.role = ROLES[session.role] ? session.role : 'employee';
@@ -280,21 +280,6 @@ function initializeLoginExperience() {
     }
     error.classList.add('hidden');
     enterWorkspace({ tenant, email, password, mfaCode }).catch((loginError) => { error.textContent = loginError.message; error.classList.remove('hidden'); });
-  });
-  $('demoAccessBtn')?.addEventListener('click', () => {
-    const error = $('loginError');
-    error?.classList.add('hidden');
-    enterWorkspace({
-      tenant: 'NASH Enterprise',
-      email: 'employee@nash.local',
-      password: '123456',
-      demo: true
-    }).catch((loginError) => {
-      if (error) {
-        error.textContent = loginError.message;
-        error.classList.remove('hidden');
-      }
-    });
   });
   $('signOutBtn')?.addEventListener('click', signOut);
   $('sidebarToggleBtn')?.addEventListener('click', () => document.querySelector('.sidebar')?.classList.toggle('mobile-open'));
@@ -482,29 +467,26 @@ function appShell(kind, eyebrow, title, subtitle, actions='', body='') {
 async function employeeAttendanceApp() {
   const e = await ensureEmployeeContext();
   const name = e?.displayName || e?.name || 'Current employee';
+  const source = await optionalApi('/api/workday/attendance/source');
+  const sourceTables = Array.isArray(source.tables) ? source.tables : [];
+  const sourceRows = sourceTables.map((table) => `<article><span>${esc(table.table)}</span><strong>${esc(table.count)}</strong><small>MySQL source table</small></article>`).join('') || '<div class="empty-state">No attendance source table is available for this environment.</div>';
+  const session = source.activeSession || null;
   appShell('attendance','TIME & ATTENDANCE','Attendance & Timesheet',`Daily presence, shifts, exceptions, overtime, and correction requests for ${name}.`, `
     <button class="primary-btn" data-command="emp_checkin_action">Check In</button>
     <button class="secondary-btn" data-command="emp_checkout_action">Check Out</button>`, `
     <div class="attendance-hero-grid">
-      <article class="clock-card"><span>Today</span><strong>${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</strong><small>Scheduled shift · 08:00–17:00</small><div class="clock-status">● Ready to record attendance</div></article>
-      <article class="attendance-stat"><span>Month status</span><strong>On track</strong><small>21 present · 1 late · 0 absent</small></article>
-      <article class="attendance-stat"><span>Worked hours</span><strong>168h</strong><small>Target 176h</small></article>
-      <article class="attendance-stat"><span>Overtime</span><strong>6.5h</strong><small>2.0h pending approval</small></article>
+      <article class="clock-card"><span>Current time</span><strong>${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</strong><small>Recorded from your browser at request time</small><div class="clock-status">● ${esc(session?.status || 'Ready to record attendance')}</div></article>
+      <article class="attendance-stat"><span>Source of truth</span><strong>MySQL</strong><small>${sourceTables.length} attendance source table(s) detected</small></article>
+      <article class="attendance-stat"><span>Runtime session</span><strong>${esc(session?.status || 'Not started')}</strong><small>${esc(session?.checkInAt ? new Date(session.checkInAt).toLocaleString() : 'No active attendance session')}</small></article>
     </div>
     <div class="domain-two-column">
-      <section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">MONTH VIEW</p><h3>July attendance calendar</h3></div><button class="secondary-btn small" data-attendance-export>Export timesheet</button></div>
-        <div class="attendance-calendar">${Array.from({length:31},(_,i)=>`<div class="day ${[4,11,18,25].includes(i)?'weekend':i===7?'late':'present'}"><span>${i+1}</span><small>${[4,11,18,25].includes(i)?'OFF':i===7?'LATE':'P'}</small></div>`).join('')}</div>
-      </section>
-      <section class="domain-panel"><p class="eyebrow">EXCEPTIONS</p><h3>Needs attention</h3><div class="domain-list">
-        <article><span>Late arrival · 8 Jul</span><strong>12 min</strong><button class="text-btn" data-attendance-exception="Late arrival · 8 Jul">Request correction</button></article>
-        <article><span>Overtime · 16 Jul</span><strong>2.0h</strong><button class="text-btn" data-attendance-exception="Overtime · 16 Jul">View approval</button></article>
-        <article><span>Missing checkout · 20 Jul</span><strong>Open</strong><button class="text-btn" data-attendance-exception="Missing checkout · 20 Jul">Add evidence</button></article>
-      </div></section>
+      <section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">ATTENDANCE SOURCES</p><h3>Available records</h3></div><button class="secondary-btn small" data-attendance-export>Export source summary</button></div><div class="domain-list">${sourceRows}</div></section>
+      <section class="domain-panel"><p class="eyebrow">EXCEPTIONS</p><h3>Request a review</h3><p class="workspace-source-context">Open a controlled request when a record requires a correction, overtime approval, or supporting evidence. No assumed exceptions are displayed.</p><button class="secondary-btn" data-attendance-exception="Attendance record review">Create attendance review request</button></section>
     </div>`);
   document.querySelector('[data-command="emp_checkin_action"]')?.addEventListener('click',()=>attendance('/api/workday/check-in','CHECK_IN',{method:'PIN Check-in'}));
   document.querySelector('[data-command="emp_checkout_action"]')?.addEventListener('click',()=>attendance('/api/workday/check-out','CHECK_OUT'));
-  document.querySelector('[data-attendance-export]')?.addEventListener('click', () => downloadCsv(`nash-attendance-${new Date().toISOString().slice(0, 10)}.csv`, [['Date', 'Status', 'Hours'], ['Current month', 'On track', '168']]));
-  document.querySelectorAll('[data-attendance-exception]').forEach((button) => button.addEventListener('click', () => permissionReceipt('EMPLOYEE_SERVICE_REQUEST', { target: button.dataset.attendanceException, note: 'Attendance exception routed for authorized HR and manager review.' })));
+  document.querySelector('[data-attendance-export]')?.addEventListener('click', () => downloadCsv(`nash-attendance-source-${new Date().toISOString().slice(0, 10)}.csv`, [['Table', 'Records'], ...sourceTables.map((table) => [table.table, table.count])]));
+  document.querySelectorAll('[data-attendance-exception]').forEach((button) => button.addEventListener('click', () => permissionReceipt('EMPLOYEE_SERVICE_REQUEST', { target: button.dataset.attendanceException, note: 'Attendance review routed for authorized HR and manager review.' })));
 }
 
 async function employeeTasksApp() {
@@ -512,13 +494,18 @@ async function employeeTasksApp() {
   const out = await optionalApi('/api/tasks');
   const tasks = (Array.isArray(out)?out:(out.tasks||out.data||[])).slice(0,8);
   state.tasks = tasks;
+  const openTasks = tasks.filter((task) => !/complete|closed/i.test(task.status || '')).length;
+  const dueToday = tasks.filter((task) => String(task.dueDate || task.deadline || '').slice(0, 10) === new Date().toISOString().slice(0, 10)).length;
+  const evidencePending = tasks.filter((task) => /evidence|pending/i.test(`${task.status || ''} ${task.evidenceRequired || ''}`)).length;
+  const completedTasks = tasks.filter((task) => /complete|closed/i.test(task.status || '')).length;
+  const recentEvidence = state.documents.filter((document) => !document.employeeId || String(document.employeeId) === String(state.selectedEmployee?.id || '')).slice(0, 2);
   const rows = tasks.length ? tasks.map((t,i)=>`<tr><td><strong>${esc(t.title||t.name||`Task ${i+1}`)}</strong><small>${esc(t.id||'')}</small></td><td>${esc(t.owner||'You')}</td><td>${esc(t.dueDate||t.deadline||'This week')}</td><td><span class="status-pill">${esc(t.status||'Open')}</span></td><td><button class="text-btn" data-task-index="${i}">Open</button></td></tr>`).join('') : `<tr><td colspan="5" class="empty-state">No tasks returned by the live task source.</td></tr>`;
   appShell('tasks','WORK MANAGEMENT','Tasks & Evidence','Manage assigned work, deadlines, evidence files, and completion receipts.',`<button class="primary-btn" data-new-evidence>Submit Evidence</button>`,`
-    <div class="task-metrics"><article><span>Open</span><strong>${tasks.length||4}</strong></article><article><span>Due today</span><strong>1</strong></article><article><span>Evidence pending</span><strong>2</strong></article><article><span>Completed this month</span><strong>18</strong></article></div>
+    <div class="task-metrics"><article><span>Open</span><strong>${openTasks}</strong></article><article><span>Due today</span><strong>${dueToday}</strong></article><article><span>Evidence pending</span><strong>${evidencePending}</strong></article><article><span>Completed in loaded queue</span><strong>${completedTasks}</strong></article></div>
     <section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">MY QUEUE</p><h3>Assigned work</h3></div><div class="table-tools"><input id="taskSearch" placeholder="Search tasks" aria-label="Search assigned tasks"><button class="secondary-btn small" data-task-filter>Filter open</button></div></div>
       <div class="table-wrap"><table class="domain-table"><thead><tr><th>Task</th><th>Owner</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody id="taskRows">${rows}</tbody></table></div>
     </section>
-    <section class="evidence-strip"><div><p class="eyebrow">EVIDENCE VAULT</p><h3>Recent evidence</h3></div><article><strong>Policy_Acknowledgement.pdf</strong><span>Submitted · manager visible</span></article><article><strong>Professional_Certificate.pdf</strong><span>Draft · replace before submission</span></article></section>`);
+    <section class="evidence-strip"><div><p class="eyebrow">EVIDENCE VAULT</p><h3>Recent evidence</h3></div>${recentEvidence.length ? recentEvidence.map((document) => `<article><strong>${esc(document.fileName)}</strong><span>${esc(document.verificationStatus || document.status || 'Controlled')}</span></article>`).join('') : '<article><strong>No evidence uploaded</strong><span>Submit evidence to create the first controlled file.</span></article>'}</section>`);
   document.querySelector('[data-new-evidence]')?.addEventListener('click',()=>evidenceForm('SUBMIT_EVIDENCE'));
   document.querySelectorAll('[data-task-index]').forEach(b=>b.onclick=()=>{state.selectedTask=tasks[Number(b.dataset.taskIndex)]; taskEndpoint('/api/workday/tasks/start','START_TASK')});
   const renderTaskRows = (query = '', openOnly = false) => { const normalized = query.trim().toLowerCase(); const filtered = tasks.filter((task) => (!normalized || `${task.title || task.name || ''} ${task.status || ''}`.toLowerCase().includes(normalized)) && (!openOnly || !/complete|closed/i.test(task.status || ''))); $('taskRows').innerHTML = filtered.length ? filtered.map((t) => `<tr><td><strong>${esc(t.title || t.name || 'Task')}</strong></td><td>${esc(t.owner || 'You')}</td><td>${esc(t.dueDate || t.deadline || 'This week')}</td><td><span class="status-pill">${esc(t.status || 'Open')}</span></td><td><button class="text-btn" data-filtered-task-index="${tasks.indexOf(t)}">Open</button></td></tr>`).join('') : '<tr><td colspan="5" class="empty-state">No assigned tasks match this filter.</td></tr>'; document.querySelectorAll('[data-filtered-task-index]').forEach((button) => button.addEventListener('click', () => { state.selectedTask = tasks[Number(button.dataset.filteredTaskIndex)]; taskEndpoint('/api/workday/tasks/start', 'START_TASK'); })); };
@@ -532,13 +519,13 @@ async function employeeFileApp() {
   const name=e?.displayName||e?.name||'Current employee';
   const code=e?.employeeCode||e?.code||'N-0001';
   appShell('employee-file','EMPLOYEE RECORD','My Employee File','Personal, employment, qualification, and document records in one controlled profile.',`<button class="primary-btn" data-upload-file>Upload Document</button>`,`
-    <section class="profile-hero"><div class="profile-avatar">${esc(name.split(' ').map(x=>x[0]).slice(0,2).join(''))}</div><div><h2>${esc(name)}</h2><p>${esc(code)} · ${esc(e?.jobTitle||e?.position||'Employee')}</p><div class="profile-tags"><span>Active</span><span>${esc(e?.department||'Assigned department')}</span><span>File complete 86%</span></div></div><div class="profile-score"><span>Profile completeness</span><strong>86%</strong><small>3 documents need attention</small></div></section>
+    <section class="profile-hero"><div class="profile-avatar">${esc(name.split(' ').map(x=>x[0]).slice(0,2).join(''))}</div><div><h2>${esc(name)}</h2><p>${esc(code)} · ${esc(e?.jobTitle||e?.position||'Employee')}</p><div class="profile-tags"><span>Active</span><span>${esc(e?.department||'Assigned department')}</span><span>${docs.length} controlled document(s)</span></div></div><div class="profile-score"><span>Controlled documents</span><strong>${docs.length}</strong><small>Upload documents to extend this record.</small></div></section>
     <nav class="record-tabs" aria-label="Employee file sections"><button class="active" data-file-tab="Overview">Overview</button><button data-file-tab="Employment">Employment</button><button data-file-tab="Qualifications">Qualifications</button><button data-file-tab="Documents">Documents</button><button data-file-tab="Emergency">Emergency</button><button data-file-tab="History">History</button></nav><p class="workspace-source-context" id="fileTabContext">Overview of controlled employee record data.</p>
     <div class="domain-two-column">
       <section class="domain-panel"><p class="eyebrow">CORE RECORD</p><h3>Personal & employment details</h3><div class="detail-grid"><div><span>Employee ID</span><strong>${esc(code)}</strong></div><div><span>Work email</span><strong>${esc(e?.email||'employee@nash.local')}</strong></div><div><span>Department</span><strong>${esc(e?.department||'—')}</strong></div><div><span>Manager</span><strong>${esc(e?.managerName||'Assigned manager')}</strong></div><div><span>Hire date</span><strong>${esc(e?.hireDate||e?.joinDate||'—')}</strong></div><div><span>Contract</span><strong>${esc(e?.contractType||'Active')}</strong></div></div></section>
-      <section class="domain-panel"><p class="eyebrow">FILE HEALTH</p><h3>Required actions</h3><div class="domain-list"><article><span>National ID / Iqama</span><strong class="good-text">Verified</strong></article><article><span>Professional certificate</span><strong class="watch-text">Upload required</strong></article><article><span>CV</span><strong>Current</strong></article><article><span>Policy acknowledgements</span><strong class="watch-text">1 pending</strong></article></div></section>
+      <section class="domain-panel"><p class="eyebrow">FILE HEALTH</p><h3>Required actions</h3><div class="domain-list"><article><span>Controlled document count</span><strong>${docs.length}</strong></article><article><span>Record status</span><strong>${docs.length ? 'Review available' : 'Upload required'}</strong></article><article><span>Next action</span><strong>${docs.length ? 'Open document library' : 'Upload a controlled document'}</strong></article></div></section>
     </div>
-    <section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">DOCUMENT LIBRARY</p><h3>Controlled files</h3></div><button class="secondary-btn small" data-upload-file-2>Add file</button></div><div class="document-grid">${(docs.length?docs.slice(0,6):[{fileName:'Employment_Contract.pdf',category:'Contract',status:'Verified'},{fileName:'CV.pdf',category:'CV / Resume',status:'Current'},{fileName:'Degree_Certificate.pdf',category:'Education',status:'Verified'}]).map(d=>`<article><div class="doc-icon">PDF</div><div><strong>${esc(d.fileName)}</strong><span>${esc(d.category||'Document')}</span><small>${esc(d.status||'Current')}</small></div><button class="text-btn" data-document-preview="${esc(d.fileName)}">View</button></article>`).join('')}</div></section>`);
+    <section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">DOCUMENT LIBRARY</p><h3>Controlled files</h3></div><button class="secondary-btn small" data-upload-file-2>Add file</button></div><div class="document-grid">${docs.length ? docs.slice(0,6).map(d=>`<article><div class="doc-icon">PDF</div><div><strong>${esc(d.fileName)}</strong><span>${esc(d.category||'Document')}</span><small>${esc(d.status||'Current')}</small></div><button class="text-btn" data-document-preview="${esc(d.fileName)}">View</button></article>`).join('') : '<div class="empty-state">No controlled documents have been uploaded for this employee.</div>'}</div></section>`);
   document.querySelectorAll('[data-upload-file],[data-upload-file-2]').forEach(b=>b.onclick=()=>employeeDocumentForm('EMPLOYEE_DOCUMENT_UPLOAD'));
   document.querySelectorAll('[data-file-tab]').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('[data-file-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); $('fileTabContext').textContent = `${button.dataset.fileTab} section selected. Source-backed edits require a controlled request.`; }));
   document.querySelectorAll('[data-document-preview]').forEach((button) => button.addEventListener('click', () => permissionReceipt('DOCUMENT_DOWNLOAD', { target: button.dataset.documentPreview, note: 'Employee requested a controlled document preview/download.' })));

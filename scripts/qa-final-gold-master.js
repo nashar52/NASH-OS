@@ -13,8 +13,8 @@ const checks = [
   ['databaseSchemaTouched false', pkg.nashCleanBuild && pkg.nashCleanBuild.databaseSchemaTouched === false],
   ['human final decision required', pkg.nashCleanBuild && pkg.nashCleanBuild.humanFinalDecisionRequired === true],
   ['AI autonomous decision blocked', pkg.nashCleanBuild && pkg.nashCleanBuild.aiAutonomousDecisionBlocked === true],
-  ['action-first title', html.includes('Final Operating Console')],
-  ['no automatic information promise', html.includes('does not preload employee data')],
+  ['action-first title', html.includes('NASH OS v1.0 — Gold Master Candidate')],
+  ['no automatic information promise', html.includes('Operational data remains request-based and permission-bound.')],
   ['employee command center', app.includes('Employee Command Center')],
   ['manager command center', app.includes('Manager Command Center')],
   ['HR command center', app.includes('HR Operations Command Center')],
@@ -28,7 +28,7 @@ const checks = [
   ['ledger on request only', app.includes("$('ledgerBtn').onclick")],
   ['final acceptance on request only', app.includes("$('acceptanceBtn').onclick = finalAcceptance")],
   ['server direct db crud blocked', server.includes('directDatabaseCrudBlocked: true')],
-  ['final styles present', css.includes('Build Final Gold Master')]
+  ['final styles present', css.includes('final-os-shell')]
 ];
 const failed = checks.filter(([, ok]) => !ok);
 if (failed.length) {
