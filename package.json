@@ -1,6 +1,6 @@
 {
   "name": "nash-os-final-operating-system-gold-master",
-  "version": "30.0.0-hf34-role-bound-access-control",
+  "version": "31.0.0-sprint10-employee-manager-self-service",
   "description": "NASH OS HF34 organization-assigned role access with dynamic navigation and server-enforced action permissions",
   "main": "server.js",
   "scripts": {
@@ -69,6 +69,7 @@
     "qa:performance-management": "node scripts/qa-performance-management.js",
     "qa:learning-talent": "node scripts/qa-learning-talent.js",
     "qa:recruitment-ats": "node scripts/qa-recruitment-ats.js",
+    "qa:sprint10-self-service": "node scripts/qa-sprint10-self-service.js",
     "qa:saudi-compliance": "node scripts/qa-saudi-compliance.js"
   },
   "dependencies": {
@@ -353,6 +354,9 @@
     "noSchemaChangeSaudiCompliance": true
   },
   "nashOs": {
+    "sprint10EnterpriseEmployeeManagerSelfServiceActive": true,
+    "sprint10AuditEvidenceReceiptActive": true,
+    "sprint10NoSchemaChange": true,
     "hf31EnterpriseEmployeeWorkspaceActive": true,
     "employeeDigitalTwinWorkspaceActive": true,
     "employeeLifecycleTabsActive": true,
