@@ -67,7 +67,8 @@
     "qa:enterprise-hr-core-e2e": "node scripts/qa-enterprise-hr-core-e2e.js",
     "qa:payroll-engine": "node scripts/qa-payroll-engine.js",
     "qa:performance-management": "node scripts/qa-performance-management.js",
-    "qa:learning-talent": "node scripts/qa-learning-talent.js"
+    "qa:learning-talent": "node scripts/qa-learning-talent.js",
+    "qa:saudi-compliance": "node scripts/qa-saudi-compliance.js"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -345,7 +346,10 @@
     "employeePerformanceDedicatedApp": true,
     "employeeRightsDedicatedApp": true,
     "hrDomainDedicatedApps": true,
-    "noDatabaseSchemaChangeHF32": true
+    "noDatabaseSchemaChangeHF32": true,
+    "saudiGovernmentComplianceSprintActive": true,
+    "saudiComplianceApiValidationActive": true,
+    "noSchemaChangeSaudiCompliance": true
   },
   "nashOs": {
     "hf31EnterpriseEmployeeWorkspaceActive": true,
