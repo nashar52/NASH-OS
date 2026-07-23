@@ -68,6 +68,7 @@
     "qa:payroll-engine": "node scripts/qa-payroll-engine.js",
     "qa:performance-management": "node scripts/qa-performance-management.js",
     "qa:learning-talent": "node scripts/qa-learning-talent.js",
+    "qa:recruitment-ats": "node scripts/qa-recruitment-ats.js",
     "qa:saudi-compliance": "node scripts/qa-saudi-compliance.js"
   },
   "dependencies": {
