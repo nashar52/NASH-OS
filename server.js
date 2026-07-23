@@ -95,6 +95,14 @@ const runtimeUnifiedControlActions = []; // Build 13 unified approval, SLA, evid
 const runtimeQualityGovernanceActions = []; // Build 14 quality checks, governance gates, control failures, and corrective actions; no schema change
 const runtimeAiDecisionActions = []; // Build 15 AI risk radar and decision support receipts; no schema change
 const runtimeExecutiveDashboardActions = []; // Build 16 executive dashboard receipts and brief requests; no schema change
+// Sprint 11 keeps decision and reporting workflow packets in memory.  It never mirrors
+// employee data or writes to MySQL: MySQL remains the only HR source of truth.
+const sprint11Runtime = { decisions: [], reports: [], audit: [] };
+function sprint11Record(collection, item) {
+  sprint11Runtime[collection].unshift(item);
+  if (sprint11Runtime[collection].length > 300) sprint11Runtime[collection].pop();
+  return item;
+}
 const runtimeUiCompressionActions = []; // Build 17 UI compression, navigation cleanup, and button matrix receipts; no schema change
 const runtimeFinalAcceptanceActions = []; // Build 18 final acceptance, local run, route and button proof receipts; no schema change
 const runtimePermissionedActions = []; // Build 18D employee/manager add-edit-delete runtime action receipts; no schema change
@@ -2348,6 +2356,85 @@ async function buildExecutiveDashboard() {
     policy: { sourceLabeledMetricsRequired: true, humanFinalDecisionRequired: true, aiAutonomousDecisionBlocked: true, noSchemaChange: true }
   };
 }
+
+async function buildSprint11Center() {
+  const dashboard = await buildExecutiveDashboard();
+  const kpi = Object.fromEntries((dashboard.kpis || []).map((item) => [item.label, item.value]));
+  const employees = Number(kpi['Total Employees'] || 0);
+  const reviews = Number(kpi['Performance Reviews'] || 0);
+  const payroll = Number(kpi['Payroll Cycles'] || 0);
+  const compliance = Number(kpi['Compliance Alerts'] || 0);
+  const confidenceScore = Math.max(45, Math.min(96, 92 - Math.min(35, dashboard.summary.riskScore / 2)));
+  const analytics = [
+    ['Workforce Analytics', employees, 'Headcount, organization coverage, workforce health', 'MySQL: employees, departments, positions'],
+    ['Recruitment Analytics', recruitment.requisitions.length, 'Requisition and hiring-flow activity', 'Runtime recruitment workflow + MySQL workforce source'],
+    ['Performance Analytics', reviews, 'Review coverage and development readiness', 'MySQL: reviews'],
+    ['Payroll Analytics', payroll, 'Payroll-cycle and WPS readiness visibility', 'MySQL: payroll_cycles + controlled compensation receipts'],
+    ['Learning Analytics', runtimeTrainingPlans.length, 'Learning plans and skills-gap response', 'Runtime learning plans grounded in MySQL employee selection'],
+    ['Compliance Analytics', compliance, 'Compliance signals and evidence readiness', 'MySQL: compliance_alerts + controlled compliance ledger'],
+    ['Attrition Prediction', dashboard.summary.riskLevel, 'Explainable retention-risk proxy; not an automated employment action', 'Source-labelled workforce, performance, and compliance signals'],
+    ['Headcount Planning', employees, 'Current workforce baseline for human planning', 'MySQL: employees + positions'],
+    ['AI Insights', dashboard.summary.riskScore, 'Explainable advisory risk signals', 'Executive risk board + AI decision support'],
+    ['Executive Reports', sprint11Runtime.reports.length, 'Controlled report snapshots and schedules', 'Sprint 11 runtime report ledger']
+  ].map(([name, value, description, source]) => ({ name, value, description, source }));
+  const recommendation = dashboard.summary.riskScore >= 55
+    ? 'Prioritize human review of compliance, evidence, and payroll blockers before material workforce decisions.'
+    : 'Maintain human review of workforce plans and retain evidence for every executive decision.';
+  return {
+    dashboard,
+    executiveViews: [
+      { name: 'CEO Dashboard', focus: 'Enterprise outcomes, financial HR metrics, risk radar, and executive timeline' },
+      { name: 'HR Director Dashboard', focus: 'Workforce health, talent heatmap, organization health, and compliance status' }
+    ],
+    analytics,
+    workforceHealth: { score: Math.max(0, 100 - dashboard.summary.riskScore), source: 'Computed from source-labelled executive risk inputs' },
+    talentHeatmap: { reviewCoverage: dashboard.coverage.reviewCoverage, developmentPlans: runtimeTrainingPlans.length, source: 'MySQL: reviews + controlled learning-plan receipts' },
+    financialHrMetrics: { payrollCycles: payroll, compensationPackets: runtimeCompensationDecisions.length, source: 'MySQL: payroll_cycles + Build 10 receipts' },
+    executiveTimeline: [
+      ...sprint11Runtime.audit.slice(0, 8).map((entry) => ({ at: entry.createdAt, event: entry.action, evidence: entry.receipt?.receiptId || 'Runtime audit entry' })),
+      ...runtimeExecutiveDashboardActions.slice(0, 4).map((entry) => ({ at: entry.receipt?.createdAt, event: entry.status, evidence: entry.receipt?.receiptId || 'Executive receipt' }))
+    ].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 12),
+    decisionCenter: {
+      recommendation,
+      confidenceScore,
+      riskScore: dashboard.summary.riskScore,
+      evidence: dashboard.riskInputs,
+      humanApprovalRequired: true,
+      history: sprint11Runtime.decisions.slice(0, 30)
+    },
+    policy: { mysqlOnlySourceOfTruth: true, noSchemaChange: true, aiRecommendationOnly: true, humanApprovalRequired: true, auditEvidenceRuntimeReceiptRequired: true }
+  };
+}
+
+app.get('/api/sprint11/center', requireSession(['executive', 'hr']), async (req, res) => {
+  try { res.json({ sprint: 11, center: await buildSprint11Center() }); }
+  catch (error) { res.status(503).json({ error: error.message }); }
+});
+
+app.post('/api/sprint11/decision', requireSession(['executive', 'hr']), async (req, res) => {
+  try {
+    const center = await buildSprint11Center();
+    const decision = cleanText(req.body?.decision, 'Decision', 500);
+    const rationale = cleanText(req.body?.rationale, 'Decision rationale', 1000);
+    const outcome = cleanText(req.body?.outcome || 'APPROVED_BY_HUMAN', 'Decision outcome', 80);
+    const receipt = createReceipt('SPRINT11_HUMAN_DECISION', null, { decision, rationale, outcome, confidenceScore: center.decisionCenter.confidenceScore, riskScore: center.decisionCenter.riskScore, evidence: center.decisionCenter.evidence.map((x) => x.key), source: 'Sprint 11 human-approved executive decision; MySQL source data unchanged' });
+    const record = sprint11Record('decisions', { id: `S11-DEC-${Date.now()}`, decision, rationale, outcome, createdAt: new Date().toISOString(), actor: req.accessSession.email, confidenceScore: center.decisionCenter.confidenceScore, riskScore: center.decisionCenter.riskScore, receipt });
+    sprint11Record('audit', { action: 'HUMAN_DECISION_RECORDED', createdAt: record.createdAt, actor: record.actor, receipt });
+    res.status(201).json({ decision: record, auditTrail: sprint11Runtime.audit[0], evidence: center.decisionCenter.evidence, runtimeReceipt: receipt, policy: center.policy });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.post('/api/sprint11/reports', requireSession(['executive', 'hr']), async (req, res) => {
+  try {
+    const format = cleanText(req.body?.format || 'DASHBOARD', 'Report format', 20).toUpperCase();
+    if (!['PDF', 'EXCEL', 'DASHBOARD'].includes(format)) throw new Error('Report format must be PDF, EXCEL, or DASHBOARD.');
+    const schedule = String(req.body?.schedule || '').trim();
+    const receipt = createReceipt('SPRINT11_EXECUTIVE_REPORT', null, { format, schedule: schedule || 'On demand', source: 'Sprint 11 controlled report request; local export only; MySQL unchanged' });
+    const report = sprint11Record('reports', { id: `S11-RPT-${Date.now()}`, format, schedule: schedule || null, status: schedule ? 'SCHEDULED_HUMAN_REVIEW' : 'PREPARED', createdAt: new Date().toISOString(), actor: req.accessSession.email, receipt });
+    sprint11Record('audit', { action: schedule ? 'REPORT_SCHEDULE_REQUESTED' : 'REPORT_EXPORT_PREPARED', createdAt: report.createdAt, actor: report.actor, receipt });
+    res.status(201).json({ report, auditTrail: sprint11Runtime.audit[0], evidence: { format, schedule: schedule || 'On demand', source: 'Source-labelled executive dashboard' }, runtimeReceipt: receipt });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
 
 app.get('/api/executive/summary', async (req, res) => {
   try {

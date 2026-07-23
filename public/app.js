@@ -1742,22 +1742,25 @@ function downloadCsv(filename, rows) {
 
 async function reportsAnalyticsCenter() {
   openOperation('Reports & Analytics Center', 'Loading source-labelled enterprise reporting. No source records are changed.', '<div class="reports-loading">Loading workforce, governance, and decision analytics…</div>');
-  const [execOut, aiOut, controlOut, qualityOut] = await Promise.all([
+  const [execOut, aiOut, controlOut, qualityOut, sprint11] = await Promise.all([
     optionalApi('/api/executive/dashboard'), optionalApi('/api/ai/summary'),
-    optionalApi('/api/controls/summary'), optionalApi('/api/quality/summary')
+    optionalApi('/api/controls/summary'), optionalApi('/api/quality/summary'), optionalApi('/api/sprint11/center')
   ]);
   const dashboard = execOut.dashboard || {};
   const summary = dashboard.summary || {};
   const panels = Array.isArray(dashboard.panels) ? dashboard.panels : [];
   const decisions = Array.isArray(dashboard.decisionBoard) ? dashboard.decisionBoard : [];
   const risks = Array.isArray(dashboard.riskInputs) ? dashboard.riskInputs : [];
+  const s11 = sprint11.center || {};
   const metrics = [
     ['Workforce', firstValue(summary, ['employees','totalEmployees','headcount'], countFrom(dashboard, ['employees'])), 'Executive dashboard'],
     ['Open Decisions', firstValue(summary, ['openDecisions','decisionBacklog'], decisions.length), 'Decision board'],
     ['Risk Score', firstValue(summary, ['riskScore'], 0), 'AI summary'],
     ['Operating Domains', panels.length, 'Executive dashboard'],
     ['Risk Drivers', risks.length, 'Explainability log'],
-    ['Human Final Decisions', 'Required', 'Governance policy']
+    ['Human Final Decisions', 'Required', 'Governance policy'],
+    ['Workforce Health', `${s11.workforceHealth?.score ?? '—'}%`, s11.workforceHealth?.source || 'Sprint 11 executive analytics'],
+    ['AI Confidence', `${s11.decisionCenter?.confidenceScore ?? '—'}%`, 'Explainable recommendation, human approval required']
   ];
   const domainRows = panels.slice(0, 10).map((p) => `<tr><td>${esc(p.title || p.name || p.key || 'Operating domain')}</td><td>${esc(firstValue(p,['value','count','status'],'Available'))}</td><td>${esc(p.source || 'Source labelled')}</td><td><span class="exec-status ${aiSignalStatus(p.status || p.value)}">${esc(p.status || 'Monitored')}</span></td></tr>`).join('') || '<tr><td colspan="4">No operating domain summary returned.</td></tr>';
   const riskRows = risks.slice(0, 8).map((r) => `<div class="report-risk-row"><div><strong>${esc(r.key)}</strong><small>${esc(r.source || 'Source labelled')}</small></div><b>${esc(r.value)}</b></div>`).join('') || '<div class="empty-state">No risk drivers returned.</div>';
@@ -1772,11 +1775,18 @@ async function reportsAnalyticsCenter() {
       </div>
       <div class="reports-grid lower">
         <section class="reports-panel"><div class="reports-head"><div><p class="eyebrow">HUMAN OWNERSHIP</p><h3>Decision Backlog</h3></div><span>${esc(decisions.length)} open</span></div><div class="report-decision-list">${decisionRows}</div></section>
-        <section class="reports-panel export-panel"><div class="reports-head"><div><p class="eyebrow">CONTROLLED OUTPUT</p><h3>Report Actions</h3></div><span>Local export</span></div><div class="report-actions"><button id="reportExportCsv" class="primary-btn">Export CSV Snapshot</button><button id="reportCreateReceipt" class="secondary-btn">Create Report Receipt</button><button id="reportRefresh" class="secondary-btn">Refresh Sources</button><button id="reportLedger" class="secondary-btn">Open Activity Ledger</button></div><p>CSV export contains the visible summary only. PDF and scheduled delivery remain gated for the SaaS provisioning phase.</p></section>
+        <section class="reports-panel export-panel"><div class="reports-head"><div><p class="eyebrow">CONTROLLED OUTPUT</p><h3>Executive Report Actions</h3></div><span>Audited</span></div><div class="report-actions"><button id="reportExportCsv" class="primary-btn">Export Excel CSV</button><button id="reportExportPdf" class="secondary-btn">Export PDF</button><button id="reportDashboardExport" class="secondary-btn">Export Dashboard</button><button id="reportSchedule" class="secondary-btn">Schedule Report</button><button id="reportRefresh" class="secondary-btn">Refresh Sources</button><button id="reportLedger" class="secondary-btn">Open Activity Ledger</button></div><p>Every report request creates an audit entry, decision evidence, and runtime receipt. PDF uses the browser print-to-PDF workflow; no MySQL data is mutated.</p></section>
       </div>
     </section>`);
-  $('reportExportCsv').onclick = () => { downloadCsv(`nash-os-report-${new Date().toISOString().slice(0,10)}.csv`, [['Metric','Value','Source'], ...metrics.map((m) => m.slice(0,3))]); toast('CSV report downloaded.'); };
-  $('reportCreateReceipt').onclick = async () => { const out = await api('/api/executive/action', { method: 'POST', body: { action: 'request_executive_brief', reportType: 'HF15_REPORT_SNAPSHOT' } }); addReceipt({ ...(out.receipt || {}), actionType: 'EXECUTIVE_REPORT_SNAPSHOT', target: 'Reports & Analytics Center', note: 'Source-labelled report snapshot prepared for human review.' }); toast('Report receipt created.'); };
+  const reportReceipt = async (format, schedule = '') => {
+    const out = await api('/api/sprint11/reports', { method: 'POST', body: { format, schedule } });
+    addReceipt({ ...(out.runtimeReceipt || {}), actionType: `EXECUTIVE_${format}_REPORT`, target: 'Executive Reports', note: `Sprint 11 ${format} report ${schedule ? 'schedule requested' : 'prepared'} with audit and evidence.` });
+    return out;
+  };
+  $('reportExportCsv').onclick = async () => { downloadCsv(`nash-os-executive-report-${new Date().toISOString().slice(0,10)}.csv`, [['Metric','Value','Source'], ...metrics.map((m) => m.slice(0,3))]); await reportReceipt('EXCEL'); toast('Excel-compatible CSV exported with receipt.'); };
+  $('reportExportPdf').onclick = async () => { await reportReceipt('PDF'); window.print(); toast('Use the print dialog to save the source-labelled report as PDF.'); };
+  $('reportDashboardExport').onclick = async () => { downloadCsv(`nash-os-dashboard-${new Date().toISOString().slice(0,10)}.csv`, [['Domain','Value','Source','Status'], ...panels.map((p) => [p.title, p.value, p.source, p.status])]); await reportReceipt('DASHBOARD'); toast('Dashboard snapshot exported with receipt.'); };
+  $('reportSchedule').onclick = async () => { const schedule = window.prompt('Schedule (for example: Monthly, first business day)'); if (!schedule) return; await reportReceipt('DASHBOARD', schedule); toast('Scheduled report request recorded for human review.'); };
   $('reportRefresh').onclick = reportsAnalyticsCenter;
   $('reportLedger').onclick = () => renderLedger(true);
 }
@@ -1799,11 +1809,11 @@ function compactSourceRows(source, limit = 6) {
 
 async function executiveAiWorkspace() {
   openOperation('NASH AI Executive Workspace', 'Loading explainable enterprise signals. AI remains advisory and cannot approve or mutate source data.', '<div class="ai-workspace-loading">Loading source-labelled intelligence…</div>');
-  const [execOut, aiOut, controlOut, qualityOut] = await Promise.all([
+  const [execOut, aiOut, controlOut, qualityOut, sprint11] = await Promise.all([
     optionalApi('/api/executive/dashboard'),
     optionalApi('/api/ai/summary'),
     optionalApi('/api/controls/summary'),
-    optionalApi('/api/quality/summary')
+    optionalApi('/api/quality/summary'), optionalApi('/api/sprint11/center')
   ]);
   const dashboard = execOut.dashboard || {};
   const summary = dashboard.summary || {};
@@ -1812,6 +1822,7 @@ async function executiveAiWorkspace() {
   const controls = controlOut.summary || controlOut.controls || controlOut;
   const quality = qualityOut.summary || qualityOut.quality || qualityOut;
   const session = readAccessSession() || {};
+  const decisionCenter = sprint11.center?.decisionCenter || {};
   const recommendation = Number(summary.riskScore || 0) >= 55
     ? 'Convene human review for the highest-risk operating domains before approving material workforce or payroll decisions.'
     : Number(summary.riskScore || 0) >= 30
@@ -1827,7 +1838,7 @@ async function executiveAiWorkspace() {
       </div>
       <div class="ai-trust-strip"><span>MySQL source of truth</span><span>Explainability active</span><span>Human override required</span><span>No schema change</span></div>
       <div class="ai-executive-grid">
-        <section class="ai-panel ai-recommendation-panel"><div class="ai-panel-head"><div><p class="eyebrow">DECISION SUPPORT</p><h3>Executive recommendation</h3></div><span>Advisory only</span></div><p class="ai-recommendation-text">${esc(recommendation)}</p><div class="ai-boundary-note"><strong>Decision boundary</strong><span>Final approval remains with the authorized executive, HR, finance, government-relations, or governance owner.</span></div><div class="ai-action-row"><button class="primary-btn" id="aiPreparePacket">Prepare Decision Packet</button><button class="secondary-btn" id="aiEscalateHuman">Escalate to Human Review</button></div></section>
+        <section class="ai-panel ai-recommendation-panel"><div class="ai-panel-head"><div><p class="eyebrow">DECISION SUPPORT</p><h3>Executive recommendation</h3></div><span>Advisory only</span></div><p class="ai-recommendation-text">${esc(decisionCenter.recommendation || recommendation)}</p><div class="ai-boundary-note"><strong>Decision boundary</strong><span>Confidence ${esc(decisionCenter.confidenceScore ?? '—')}% · risk ${esc(decisionCenter.riskScore ?? summary.riskScore ?? '—')}/100. Final approval remains with the authorized executive, HR, finance, government-relations, or governance owner.</span></div><div class="ai-action-row"><button class="primary-btn" id="aiPreparePacket">Prepare Decision Packet</button><button class="secondary-btn" id="aiApproveHuman">Record Human Decision</button><button class="secondary-btn" id="aiEscalateHuman">Escalate to Human Review</button></div></section>
         <section class="ai-panel"><div class="ai-panel-head"><div><p class="eyebrow">SOURCE HEALTH</p><h3>Connected intelligence</h3></div><span>${aiOut.unavailable ? 'Partial' : 'Available'}</span></div><div class="ai-source-list">${compactSourceRows(aiOut.counts || aiOut, 7)}</div></section>
       </div>
       <div class="ai-executive-grid lower">
@@ -1845,6 +1856,16 @@ async function executiveAiWorkspace() {
     const receipt = { ...(out.receipt || {}), actionType: 'EXECUTIVE_AI_DECISION_PACKET', target: 'Executive decision queue' };
     addReceipt(receipt);
     openOperation('AI Decision Packet Prepared', 'The packet is advisory. Final decision remains human-controlled.', receiptCard(receipt));
+  };
+  $('aiApproveHuman').onclick = async () => {
+    const decision = window.prompt('Human decision to record');
+    if (!decision) return;
+    const rationale = window.prompt('Decision rationale and evidence reference');
+    if (!rationale) return;
+    const out = await api('/api/sprint11/decision', { method: 'POST', body: { decision, rationale, outcome: 'APPROVED_BY_HUMAN' } });
+    addReceipt({ ...(out.runtimeReceipt || {}), actionType: 'SPRINT11_HUMAN_DECISION', target: decision, note: rationale });
+    toast('Human decision recorded with audit trail, evidence, and runtime receipt.');
+    executiveAiWorkspace();
   };
   $('aiEscalateHuman').onclick = () => permissionReceipt('EXEC_ESCALATE', { target: 'AI-supported executive review', note: 'AI signal escalated for authorized human review. No autonomous action executed.' });
   $('aiRefreshWorkspace').onclick = executiveAiWorkspace;
