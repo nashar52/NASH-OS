@@ -64,7 +64,8 @@
     "qa:hf34": "node scripts/qa-hf34.js",
     "qa:hf35-domain-apps": "node scripts/qa-hf35-domain-apps.js",
     "qa:security-boundaries": "node scripts/qa-security-boundaries.js",
-    "qa:enterprise-hr-core-e2e": "node scripts/qa-enterprise-hr-core-e2e.js"
+    "qa:enterprise-hr-core-e2e": "node scripts/qa-enterprise-hr-core-e2e.js",
+    "qa:payroll-engine": "node scripts/qa-payroll-engine.js"
   },
   "dependencies": {
     "express": "^4.19.2",

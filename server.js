@@ -2,6 +2,7 @@ const express = require('express');
 const mysql = require('mysql2/promise');
 const path = require('path');
 const crypto = require('crypto');
+const { calculatePayroll, validateSaudiCompliance, endOfService } = require('./payroll-engine');
 const { dbConfig, runtimeLock, loadEnv } = require('./scripts/env');
 
 loadEnv();
@@ -62,6 +63,8 @@ const runtimeFinalAcceptanceActions = []; // Build 18 final acceptance, local ru
 const runtimePermissionedActions = []; // Build 18D employee/manager add-edit-delete runtime action receipts; no schema change
 const runtimeSaasTenants = [{ id:'TNT-NASH-ENTERPRISE', name:'NASH Enterprise', plan:'Enterprise Trial', region:'Saudi Arabia', status:'ACTIVE', isolation:'Runtime tenant boundary' }];
 const runtimeSaasReceipts = [];
+const payrollRuntime = { periods: [], runs: [], audit: [] };
+function payrollAudit(action, actor, detail = {}) { const entry = { id: `PAY-AUD-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`, action, actor, detail, createdAt: new Date().toISOString() }; payrollRuntime.audit.unshift(entry); if (payrollRuntime.audit.length > 500) payrollRuntime.audit.pop(); return entry; }
 
 // Enterprise HR core: runtime workflow records preserve the existing MySQL source tables.
 // Production deployments can replace this adapter with a transactional repository without changing the API contract.
@@ -2600,6 +2603,55 @@ app.post('/api/hr-core/:collection/:id/transition', requireSession(['hr']), (req
   const entity = hrTransition(collection, req.params.id, status, hrActor(req), String(req.body.note || ''));
   if (!entity) return res.status(404).json({ error: 'HR core record not found.' });
   res.json({ entity, audit: enterpriseHr.audit[0], message: `Status changed to ${status}; human accountability retained.` });
+});
+
+// Payroll is an auditable runtime workflow over existing MySQL employee and
+// payroll-cycle sources. It intentionally does not alter source schema/data.
+app.get('/api/payroll/dashboard', requireSession(['hr', 'executive']), async (req, res) => {
+  let source = { available: false, payrollCycles: 0, employees: 0 };
+  try { source = await withConn(async (conn) => { const counts = await safeCounts(conn); return { available: true, payrollCycles: counts.payroll_cycles || 0, employees: counts.employees || 0 }; }); } catch (_) { /* workflow remains inspectable during source outage */ }
+  res.json({ source, periods: payrollRuntime.periods.slice(0, 50), runs: payrollRuntime.runs.slice(0, 50), audit: payrollRuntime.audit.slice(0, 100), controls: { mysqlSourceOfTruth: true, directMysqlMutation: false, approvalWorkflow: ['DRAFT', 'CALCULATED', 'HR_APPROVED', 'FINANCE_APPROVED', 'EXPORTED'], saudiCompliance: true, wpsExport: true, mudadReadiness: true, gosiReconciliation: true } });
+});
+
+app.post('/api/payroll/periods', requireSession(['hr']), (req, res) => {
+  const body = req.body || {}; const start = String(body.startDate || ''); const end = String(body.endDate || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || start > end) return res.status(400).json({ error: 'A valid start and end date are required.' });
+  if (payrollRuntime.periods.some((p) => p.startDate === start && p.endDate === end)) return res.status(409).json({ error: 'This payroll period already exists.' });
+  const period = { id: `PAY-PER-${Date.now()}`, name: String(body.name || `${start} to ${end}`).slice(0, 100), startDate: start, endDate: end, status: 'DRAFT', createdBy: req.accessSession.email, createdAt: new Date().toISOString() };
+  payrollRuntime.periods.unshift(period); const audit = payrollAudit('PERIOD_CREATED', req.accessSession.email, { periodId: period.id });
+  res.status(201).json({ period, audit, message: 'Payroll period created in controlled draft status.' });
+});
+
+app.post('/api/payroll/runs', requireSession(['hr']), async (req, res) => {
+  try {
+    const body = req.body || {}; const period = payrollRuntime.periods.find((p) => p.id === String(body.periodId));
+    if (!period) return res.status(400).json({ error: 'Select an existing payroll period.' });
+    if (period.status === 'EXPORTED') return res.status(409).json({ error: 'An exported period cannot be recalculated.' });
+    const profile = await getProfileById(String(body.employeeId || ''));
+    if (!profile) return res.status(400).json({ error: 'Controlled employee selection is required.' });
+    const input = { ...body, basicSalary: body.basicSalary || profile.salary, employeeCode: profile.employeeCode || profile.id, periodStart: period.startDate, periodEnd: period.endDate, saudi: isSaudiProfile(profile) };
+    const calculation = calculatePayroll(input); const compliance = validateSaudiCompliance(input, calculation);
+    const run = { id: `PAY-RUN-${Date.now()}`, periodId: period.id, employeeId: profile.id, employeeCode: input.employeeCode, employeeName: profile.displayName, input: { basicSalary: calculation.basic, allowances: body.allowances || [], deductions: body.deductions || [], overtimeHours: Number(body.overtimeHours || 0), unpaidLeaveDays: Number(body.unpaidLeaveDays || 0), loanInstallment: calculation.loanInstallment, bonus: calculation.bonus, bankIban: body.bankIban || '' }, calculation, compliance, endOfServiceEstimate: endOfService(calculation.basic, body.serviceYears), status: 'CALCULATED', createdBy: req.accessSession.email, createdAt: new Date().toISOString() };
+    payrollRuntime.runs.unshift(run); const audit = payrollAudit('RUN_CALCULATED', req.accessSession.email, { runId: run.id, periodId: period.id, net: calculation.net, compliance: compliance.wpsStatus });
+    res.status(201).json({ run, audit, message: compliance.ready ? 'Payroll calculated and ready for human approval.' : 'Payroll calculated with Saudi compliance blockers.' });
+  } catch (error) { res.status(503).json({ error: error.message }); }
+});
+
+app.post('/api/payroll/runs/:id/action', requireSession(['hr', 'executive']), (req, res) => {
+  const run = payrollRuntime.runs.find((item) => item.id === String(req.params.id)); const action = String(req.body?.action || '').toUpperCase();
+  if (!run) return res.status(404).json({ error: 'Payroll run not found.' });
+  const allowed = { HR_APPROVE: ['CALCULATED'], FINANCE_APPROVE: ['HR_APPROVED'], EXPORT_WPS: ['FINANCE_APPROVED'] };
+  if (!allowed[action] || !allowed[action].includes(run.status)) return res.status(409).json({ error: 'This action is not allowed at the current approval stage.' });
+  if (action === 'EXPORT_WPS' && !run.compliance.ready) return res.status(422).json({ error: `WPS export blocked: ${run.compliance.issues.join(' ')}` });
+  run.status = action === 'HR_APPROVE' ? 'HR_APPROVED' : action === 'FINANCE_APPROVE' ? 'FINANCE_APPROVED' : 'EXPORTED'; run.updatedAt = new Date().toISOString(); run[action === 'EXPORT_WPS' ? 'wpsExport' : 'approval'] = { by: req.accessSession.email, at: run.updatedAt };
+  const audit = payrollAudit(action, req.accessSession.email, { runId: run.id, status: run.status });
+  const payload = action === 'EXPORT_WPS' ? `EmployeeCode,IBAN,NetPay\n${run.employeeCode},${run.input.bankIban},${run.calculation.net.toFixed(2)}\n` : null;
+  res.json({ run, audit, export: payload ? { fileName: `wps-${run.periodId}.csv`, content: payload, mudadStatus: run.compliance.mudadStatus, gosiEmployeeContribution: run.calculation.gosiEmployee } : null, message: action === 'EXPORT_WPS' ? 'WPS export prepared. Submit to Mudad only through an authorized external channel.' : 'Human payroll approval recorded.' });
+});
+
+app.get('/api/payroll/runs/:id/payslip', requireSession(['hr', 'executive']), (req, res) => {
+  const run = payrollRuntime.runs.find((item) => item.id === String(req.params.id)); if (!run) return res.status(404).json({ error: 'Payslip not found.' });
+  const audit = payrollAudit('PAYSLIP_VIEWED', req.accessSession.email, { runId: run.id }); res.json({ payslip: { runId: run.id, periodId: run.periodId, employeeName: run.employeeName, employeeCode: run.employeeCode, earnings: { basic: run.calculation.basic, allowances: run.calculation.allowances, overtime: run.calculation.overtime, bonus: run.calculation.bonus }, deductions: { unpaidLeave: run.calculation.leaveImpact, deductions: run.calculation.deductions, loan: run.calculation.loanInstallment, gosi: run.calculation.gosiEmployee }, gross: run.calculation.gross, net: run.calculation.net, status: run.status }, audit });
 });
 
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));

@@ -1,0 +1,12 @@
+'use strict';
+const assert = require('assert');
+const { calculatePayroll, validateSaudiCompliance, endOfService } = require('../payroll-engine');
+const payroll = calculatePayroll({ basicSalary: 10000, allowances: [{ amount: 1000 }], overtimeHours: 8, deductions: [{ amount: 250 }], loanInstallment: 500, bonus: 750, unpaidLeaveDays: 1, saudi: true });
+assert.equal(payroll.gross, 12250);
+assert.equal(payroll.gosiEmployee, 975);
+assert.equal(payroll.net, 10191.67);
+assert.equal(endOfService(10000, 7), 45000);
+const validation = validateSaudiCompliance({ employeeCode: 'E-1', bankIban: 'SA001234', periodStart: '2026-07-01', periodEnd: '2026-07-31', basicSalary: 10000, saudi: true });
+assert.equal(validation.ready, true);
+assert.equal(validateSaudiCompliance({ basicSalary: 0 }).wpsStatus, 'BLOCKED');
+console.log('Payroll engine QA passed.');
