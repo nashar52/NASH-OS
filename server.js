@@ -63,6 +63,25 @@ const runtimePermissionedActions = []; // Build 18D employee/manager add-edit-de
 const runtimeSaasTenants = [{ id:'TNT-NASH-ENTERPRISE', name:'NASH Enterprise', plan:'Enterprise Trial', region:'Saudi Arabia', status:'ACTIVE', isolation:'Runtime tenant boundary' }];
 const runtimeSaasReceipts = [];
 
+// Enterprise HR core: runtime workflow records preserve the existing MySQL source tables.
+// Production deployments can replace this adapter with a transactional repository without changing the API contract.
+const enterpriseHr = { employees: [], organizations: [], positions: [], jobDescriptions: [], candidates: [], onboarding: [], lifecycle: [], audit: [] };
+const HR_CORE_LIMIT = 500;
+function hrId(prefix) { return `${prefix}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`; }
+function hrRecord(collection, entity, action, actor) {
+  const entry = { id: hrId('HRA'), collection, entityId: entity.id, action, actor, createdAt: new Date().toISOString() };
+  enterpriseHr.audit.unshift(entry); if (enterpriseHr.audit.length > HR_CORE_LIMIT) enterpriseHr.audit.pop(); return entry;
+}
+function hrCreate(collection, payload, actor) {
+  const entity = { id: hrId(collection.slice(0, 3).toUpperCase()), ...payload, status: payload.status || 'DRAFT', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  enterpriseHr[collection].unshift(entity); hrRecord(collection, entity, 'CREATED', actor); return entity;
+}
+function hrTransition(collection, id, status, actor, note = '') {
+  const entity = enterpriseHr[collection].find((item) => item.id === id);
+  if (!entity) return null; entity.status = status; entity.updatedAt = new Date().toISOString(); if (note) entity.note = note; hrRecord(collection, entity, `STATUS_${status}`, actor); return entity;
+}
+function hrActor(req) { return req.accessSession.email; }
+
 async function withConn(fn) {
   const conn = await mysql.createConnection(dbConfig());
   try { return await fn(conn); } finally { await conn.end(); }
@@ -2558,6 +2577,30 @@ app.get('/api/saas/provisioning', requireSession(['executive']), (req,res)=>res.
 app.post('/api/saas/provisioning/run', requireSession(['executive']), (req,res)=>res.json({message:'Provisioning acceptance completed in runtime mode. External DNS, identity provider, payment gateway, and cloud infrastructure remain deployment-stage integrations.',receipt:saasReceipt('TENANT_PROVISIONING_RUN',req.accessSession.tenant,'Runtime provisioning gate completed.')}));
 app.get('/api/saas/release-readiness', requireSession(['executive']), (req,res)=>res.json({release:{name:'NASH OS HF20 Release Candidate',score:92,status:'LOCAL RELEASE CANDIDATE',summary:'HF16 AI Copilot, HF17 tenant control plane, HF18 subscription and billing, HF19 provisioning, and HF20 readiness gates consolidated without HR schema change.'},gates:[{name:'MySQL source lock',status:'PASS',evidence:'Existing lock checks preserved'},{name:'Role-bound UX',status:'PASS',evidence:'Employee, Manager, HR, Executive separation'},{name:'AI decision boundary',status:'PASS',evidence:'Human final decision required'},{name:'SaaS control plane',status:'PASS',evidence:'Runtime tenant, billing, provisioning receipts'},{name:'Production infrastructure',status:'PENDING',evidence:'Cloud, SSO, payment gateway, monitoring'}]}));
 app.post('/api/saas/release-readiness/run', requireSession(['executive']), (req,res)=>res.json({message:'Release gate passed for local release-candidate scope. Production launch still requires cloud infrastructure, security hardening, SSO, payment processing, backups, monitoring, and legal/commercial configuration.',receipt:saasReceipt('HF20_RELEASE_GATE','NASH OS HF20','Local release-candidate gate executed.')}));
+
+
+// Enterprise HR core workflows. All mutations are permissioned runtime records until a
+// configured HR repository is connected; no existing MySQL source row is changed.
+app.get('/api/hr-core/dashboard', requireSession(['hr']), async (req, res) => {
+  let source = { employees: 0, departments: 0, positions: 0, available: false };
+  try { source = await withConn(async (conn) => { const counts = await safeCounts(conn); return { employees: counts.employees || 0, departments: counts.departments || 0, positions: counts.positions || 0, available: true }; }); } catch (_) { /* runtime workflows remain available during source outage */ }
+  res.json({ source, records: Object.fromEntries(['employees','organizations','positions','jobDescriptions','candidates','onboarding','lifecycle'].map((key) => [key, enterpriseHr[key]])), audit: enterpriseHr.audit.slice(0, 30), policy: { directMysqlMutation: false, humanApprovalRequired: true } });
+});
+app.post('/api/hr-core/:collection', requireSession(['hr']), (req, res) => {
+  const collection = String(req.params.collection); const allowed = ['employees','organizations','positions','jobDescriptions','candidates','onboarding','lifecycle'];
+  if (!allowed.includes(collection)) return res.status(404).json({ error: 'Unknown HR core collection.' });
+  const body = req.body || {}; const required = { employees:['fullName','employeeCode'], organizations:['name','code'], positions:['title','code'], jobDescriptions:['title','positionCode'], candidates:['fullName','jobTitle'], onboarding:['employeeName','startDate'], lifecycle:['employeeName','eventType'] }[collection];
+  const missing = required.filter((key) => !String(body[key] || '').trim()); if (missing.length) return res.status(400).json({ error: `Required fields: ${missing.join(', ')}.` });
+  const entity = hrCreate(collection, body, hrActor(req)); res.status(201).json({ entity, audit: enterpriseHr.audit[0], message: `${collection} record created and routed for human review.` });
+});
+app.post('/api/hr-core/:collection/:id/transition', requireSession(['hr']), (req, res) => {
+  const collection = String(req.params.collection); const allowed = ['employees','organizations','positions','jobDescriptions','candidates','onboarding','lifecycle'];
+  const status = String(req.body.status || '').trim().toUpperCase();
+  if (!allowed.includes(collection) || !['DRAFT','IN_REVIEW','APPROVED','ACTIVE','REJECTED','HIRED','COMPLETED','CLOSED'].includes(status)) return res.status(400).json({ error: 'Invalid workflow transition.' });
+  const entity = hrTransition(collection, req.params.id, status, hrActor(req), String(req.body.note || ''));
+  if (!entity) return res.status(404).json({ error: 'HR core record not found.' });
+  res.json({ entity, audit: enterpriseHr.audit[0], message: `Status changed to ${status}; human accountability retained.` });
+});
 
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 

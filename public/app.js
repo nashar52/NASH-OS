@@ -63,12 +63,13 @@ const SAAS_NAV = {
   hr: [
     { label: 'HR Workspace', command: 'hr_select', icon: '01' },
     { label: 'Employee 360', command: 'hr_file', icon: '02' },
-    { label: 'Performance', command: 'hr_performance', icon: '03' },
-    { label: 'Learning', command: 'hr_training', icon: '04' },
-    { label: 'Compensation', command: 'hr_compensation', icon: '05' },
-    { label: 'Government', command: 'hr_government', icon: '06' },
-    { label: 'Quality & Governance', command: 'hr_quality', icon: '07' },
-    { label: 'AI Decision Support', command: 'hr_ai', icon: '08' }
+    { label: 'Enterprise HR Core', command: 'hr_core', icon: '03' },
+    { label: 'Performance', command: 'hr_performance', icon: '04' },
+    { label: 'Learning', command: 'hr_training', icon: '05' },
+    { label: 'Compensation', command: 'hr_compensation', icon: '06' },
+    { label: 'Government', command: 'hr_government', icon: '07' },
+    { label: 'Quality & Governance', command: 'hr_quality', icon: '08' },
+    { label: 'AI Decision Support', command: 'hr_ai', icon: '09' }
   ],
   executive: [
     { label: 'Executive Dashboard', command: 'exec_dashboard', icon: '01' },
@@ -575,6 +576,32 @@ async function hrDomainApp(domain) {
   document.querySelector('[data-hr-export]')?.addEventListener('click', () => downloadCsv(`nash-${domain}-queue-${new Date().toISOString().slice(0, 10)}.csv`, [c[4], ...hrRows.filter((row) => !row.hidden).map((row) => [...row.cells].map((cell) => cell.innerText.trim()))]));
 }
 
+async function enterpriseHrCoreWorkspace() {
+  const data = await api('/api/hr-core/dashboard');
+  const workflows = [
+    ['employees', 'Employee Master File', 'Controlled employee identity and employment records', ['fullName:Full name', 'employeeCode:Employee code', 'workEmail:Work email', 'department:Department', 'position:Position']],
+    ['organizations', 'Organization Structure', 'Departments, reporting units, and cost centers', ['name:Unit name', 'code:Unit code', 'parentCode:Parent unit code', 'leader:Accountable leader']],
+    ['positions', 'Position Management', 'Approved positions, grades, and headcount ownership', ['title:Position title', 'code:Position code', 'department:Department', 'grade:Grade']],
+    ['jobDescriptions', 'Job Description & SOP', 'Versioned role outcomes, SOP references, and controls', ['title:JD title', 'positionCode:Position code', 'version:Version', 'sopReference:SOP reference']],
+    ['candidates', 'Hiring', 'Candidate pipeline from intake through hire decision', ['fullName:Candidate name', 'jobTitle:Role title', 'source:Hiring source', 'owner:Recruiter']],
+    ['onboarding', 'Onboarding', 'Start-date readiness, equipment, access, and policy acknowledgements', ['employeeName:Employee name', 'startDate:Start date', 'owner:Onboarding owner', 'checklist:Checklist reference']],
+    ['lifecycle', 'Employee Lifecycle', 'Controlled employee changes, transfers, leave, and separation events', ['employeeName:Employee name', 'eventType:Lifecycle event', 'effectiveDate:Effective date', 'owner:Case owner']]
+  ];
+  const cards = workflows.map(([key, title, description]) => `<button class="hr-domain-card" data-hr-core-open="${esc(key)}"><span>${esc(title)}</span><strong>${esc((data.records[key] || []).length)}</strong><small>${esc(description)}</small><b>Manage workflow →</b></button>`).join('');
+  openOperation('Enterprise HR Core', 'Production workflow controls for employee master data, structure, positions, JD/SOP, hiring, onboarding, and lifecycle. Runtime records are auditable and require human approval.', `
+    <section class="hr-ops-shell"><div class="hr-ops-hero"><div><p class="eyebrow">ENTERPRISE HR PLATFORM</p><h2>Core people operations</h2><p>Source reference: ${data.source.available ? `${esc(data.source.employees)} employees · ${esc(data.source.departments)} departments · ${esc(data.source.positions)} positions from MySQL` : 'MySQL source temporarily unavailable; workflow records remain available for controlled review.'}</p></div><div class="hr-source-card"><span>Human approval</span><strong>Required</strong><small>No direct source-table mutation</small></div></div><div class="hr-domain-grid">${cards}</div><section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">AUDIT TRAIL</p><h3>Latest core workflow activity</h3></div></div><div class="table-wrap"><table class="domain-table"><thead><tr><th>Action</th><th>Workflow</th><th>Actor</th><th>Time</th></tr></thead><tbody>${(data.audit || []).length ? data.audit.slice(0,8).map(a => `<tr><td>${esc(a.action)}</td><td>${esc(a.collection)}</td><td>${esc(a.actor)}</td><td>${esc(a.createdAt)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty-state">No core workflow activity yet.</td></tr>'}</tbody></table></div></section></section>`);
+  document.querySelectorAll('[data-hr-core-open]').forEach((button) => button.onclick = () => enterpriseHrWorkflow(button.dataset.hrCoreOpen, workflows));
+}
+
+async function enterpriseHrWorkflow(collection, definitions) {
+  const definition = definitions.find((item) => item[0] === collection); if (!definition) return;
+  const [key, title, description, fields] = definition; const data = await api('/api/hr-core/dashboard'); const records = data.records[key] || [];
+  const fieldHtml = fields.map((spec) => { const [name, label] = spec.split(':'); const type = /date/i.test(label) ? 'date' : 'text'; return `<label class="form-field"><span>${esc(label)}</span><input name="${esc(name)}" type="${type}" required></label>`; }).join('');
+  openOperation(title, description, `<section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">CREATE CONTROLLED RECORD</p><h3>Route for human review</h3></div></div><form id="hrCoreForm" class="form-grid">${fieldHtml}<button class="primary-btn" type="submit">Create ${esc(title)} record</button></form></section><section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">WORKFLOW REGISTER</p><h3>${esc(records.length)} record(s)</h3></div></div><div class="table-wrap"><table class="domain-table"><thead><tr><th>Record</th><th>Details</th><th>Status</th><th>Action</th></tr></thead><tbody>${records.length ? records.map(record => `<tr><td><strong>${esc(record.fullName || record.name || record.title || record.employeeName)}</strong><small>${esc(record.id)}</small></td><td>${esc(Object.entries(record).filter(([k]) => !['id','status','createdAt','updatedAt','note'].includes(k)).slice(1,3).map(([,v]) => v).join(' · '))}</td><td><span class="status-pill">${esc(record.status)}</span></td><td><button class="secondary-btn small" data-hr-core-transition="${esc(record.id)}">Advance review</button></td></tr>`).join('') : '<tr><td colspan="4" class="empty-state">No records yet. Create the first controlled record above.</td></tr>'}</tbody></table></div></section>`);
+  $('hrCoreForm').onsubmit = async (event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); const out = await api(`/api/hr-core/${key}`, { method: 'POST', body: values }); addReceipt({ ...out.audit, actionType: `HR_CORE_${key.toUpperCase()}_CREATE`, target: title, note: out.message }); toast(out.message); enterpriseHrWorkflow(key, definitions); };
+  document.querySelectorAll('[data-hr-core-transition]').forEach((button) => button.onclick = async () => { const out = await api(`/api/hr-core/${key}/${encodeURIComponent(button.dataset.hrCoreTransition)}/transition`, { method: 'POST', body: { status: 'IN_REVIEW', note: 'Advanced from controlled HR workspace.' } }); addReceipt({ ...out.audit, actionType: `HR_CORE_${key.toUpperCase()}_REVIEW`, target: title, note: out.message }); toast(out.message); enterpriseHrWorkflow(key, definitions); });
+}
+
 async function runCommand(command) {
   try {
     const map = {
@@ -609,6 +636,7 @@ async function runCommand(command) {
       mgr_correction: () => documentActionForm('MANAGER_EVIDENCE_CORRECTION'),
       mgr_escalate_sla: () => permissionReceipt('MANAGER_ESCALATE_SLA', { target: taskLabel(), note: 'Manager escalated SLA.' }),
       hr_file: employee360Workspace,
+      hr_core: enterpriseHrCoreWorkspace,
       hr_upload_document: () => employeeDocumentForm('HR_DOCUMENT_UPLOAD'),
       hr_document_intake: () => documentIntakeQueue('Document Intake Queue', 'hr'),
       hr_verify_document: () => documentActionForm('HR_DOCUMENT_VERIFY'),
