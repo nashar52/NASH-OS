@@ -62,6 +62,7 @@
     "qa:hf31": "node scripts/qa-hf31.js",
     "qa:hf32": "node scripts/qa-hf32.js",
     "qa:hf34": "node scripts/qa-hf34.js",
+    "qa:hf35-domain-apps": "node scripts/qa-hf35-domain-apps.js",
     "qa:security-boundaries": "node scripts/qa-security-boundaries.js"
   },
   "dependencies": {
