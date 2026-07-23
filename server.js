@@ -50,6 +50,26 @@ const runtimeClosureDecisions = [];
 const runtimeSopOptimizations = []; // Build 06 runtime AI SOP optimization receipts; no schema change
 const runtimeSelfServiceViews = []; // Build 09 controlled employee self-service views; no schema change
 const runtimePerformanceDecisions = []; // Build 09 performance final decisions; no schema change
+// Performance Sprint: workflow records are deliberately runtime-only. Employee and review
+// evidence is always resolved from MySQL at request time; no HR schema is created or changed.
+const performanceRuntime = { cycles: [], goals: [], assessments: [], feedback: [], calibrations: [], pips: [], recommendations: [] };
+const PERFORMANCE_RUNTIME_LIMIT = 500;
+function performanceRecord(collection, record) {
+  performanceRuntime[collection].unshift(record);
+  if (performanceRuntime[collection].length > PERFORMANCE_RUNTIME_LIMIT) performanceRuntime[collection].pop();
+  return record;
+}
+function cleanText(value, field, max = 500, required = true) {
+  const text = String(value || '').trim().replace(/\s+/g, ' ');
+  if (required && !text) throw new Error(`${field} is required.`);
+  if (text.length > max) throw new Error(`${field} must be at most ${max} characters.`);
+  return text;
+}
+function validIsoDate(value, field) {
+  const text = cleanText(value, field, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(Date.parse(`${text}T00:00:00Z`))) throw new Error(`${field} must be an ISO date (YYYY-MM-DD).`);
+  return text;
+}
 const runtimeTrainingPlans = []; // Build 09 training and development plans; no schema change
 const runtimeCompensationDecisions = []; // Build 10 compensation, payroll impact, WPS readiness decisions; no schema change
 const runtimeGovernmentActions = []; // Build 11 government relations and compliance decisions; no schema change
@@ -1518,6 +1538,71 @@ app.post('/api/performance/final-decision', async (req, res) => {
 app.get('/api/performance/evaluations/:employeeId', (req, res) => {
   const employeeId = String(req.params.employeeId || '');
   res.json({ lock: LOCK, build: '09', decisions: runtimePerformanceDecisions.filter((x) => x.employeeId === employeeId).slice(0, 50), source: 'Clean Build 09 runtime performance decisions; no schema change' });
+});
+
+// Enterprise Performance Management API. These routes create auditable workflow packets,
+// not shadow employee records; MySQL remains the authoritative employee/evidence source.
+function performanceActor(req) { return req.accessSession.email; }
+function performanceId(prefix) { return `${prefix}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`; }
+async function performanceProfile(employeeId) {
+  const profile = await getProfileById(String(employeeId || ''));
+  if (!profile) throw new Error('A valid MySQL employee selection is required.');
+  return profile;
+}
+function performanceError(res, error) { res.status(/required|must be|valid MySQL/i.test(error.message) ? 400 : 503).json({ lock: LOCK, error: error.message }); }
+app.get('/api/performance/dashboard', requireSession(['hr', 'manager', 'executive']), async (req, res) => {
+  try {
+    const summary = await withConn(async (conn) => safeCounts(conn));
+    const openPips = performanceRuntime.pips.filter((x) => x.status !== 'CLOSED').length;
+    res.json({ lock: LOCK, sourceOfTruth: 'mysql', cycles: performanceRuntime.cycles, metrics: { employees: summary.employees || 0, goals: performanceRuntime.goals.length, selfAssessments: performanceRuntime.assessments.filter((x) => x.type === 'SELF').length, managerReviews: performanceRuntime.assessments.filter((x) => x.type === 'MANAGER').length, feedbackRequests: performanceRuntime.feedback.length, calibrationSessions: performanceRuntime.calibrations.length, openPips, promotionRecommendations: performanceRuntime.recommendations.filter((x) => x.type === 'PROMOTION').length, compensationRecommendations: performanceRuntime.recommendations.filter((x) => x.type === 'COMPENSATION').length }, records: performanceRuntime, policy: { mysqlSourceOfTruth: true, runtimeWorkflowOnly: true, schemaChanged: false, humanFinalDecisionRequired: true, aiAdvisoryOnly: true } });
+  } catch (error) { performanceError(res, error); }
+});
+app.post('/api/performance/cycles', requireSession(['hr']), (req, res) => {
+  try {
+    const name = cleanText(req.body.name, 'Cycle name', 120); const startDate = validIsoDate(req.body.startDate, 'Start date'); const endDate = validIsoDate(req.body.endDate, 'End date');
+    if (startDate >= endDate) throw new Error('End date must be after start date.');
+    const cycle = performanceRecord('cycles', { id: performanceId('PCY'), name, startDate, endDate, status: 'DRAFT', createdBy: performanceActor(req), createdAt: new Date().toISOString() });
+    res.status(201).json({ cycle, policy: { schemaChanged: false, humanFinalDecisionRequired: true } });
+  } catch (error) { performanceError(res, error); }
+});
+app.post('/api/performance/goals', requireSession(['employee', 'manager', 'hr']), async (req, res) => {
+  try {
+    const profile = await performanceProfile(req.body.employeeId); const target = Number(req.body.target);
+    if (!Number.isFinite(target) || target <= 0 || target > 1000000) throw new Error('Goal target must be a number between 0 and 1,000,000.');
+    const goal = performanceRecord('goals', { id: performanceId('OKR'), employeeId: profile.id, employeeName: profile.displayName, cycleId: cleanText(req.body.cycleId, 'Cycle', 80), title: cleanText(req.body.title, 'Goal title', 160), metric: cleanText(req.body.metric, 'KPI metric', 100), target, progress: 0, dueDate: validIsoDate(req.body.dueDate, 'Due date'), status: 'DRAFT', createdBy: performanceActor(req), createdAt: new Date().toISOString(), source: 'MySQL employee selection + runtime performance workflow; no schema change' });
+    res.status(201).json({ goal });
+  } catch (error) { performanceError(res, error); }
+});
+app.post('/api/performance/assessments', requireSession(['employee', 'manager', 'hr']), async (req, res) => {
+  try {
+    const profile = await performanceProfile(req.body.employeeId); const type = cleanText(req.body.type, 'Assessment type', 20).toUpperCase(); const score = Number(req.body.score);
+    if (!['SELF', 'MANAGER'].includes(type)) throw new Error('Assessment type must be SELF or MANAGER.');
+    if (!Number.isFinite(score) || score < 1 || score > 5) throw new Error('Score must be between 1 and 5.');
+    if (type === 'MANAGER' && !['manager', 'hr'].includes(req.accessSession.role)) return res.status(403).json({ error: 'Only a manager or HR user may submit a manager review.' });
+    const assessment = performanceRecord('assessments', { id: performanceId(type === 'SELF' ? 'PSA' : 'PMR'), type, employeeId: profile.id, employeeName: profile.displayName, cycleId: cleanText(req.body.cycleId, 'Cycle', 80), competency: cleanText(req.body.competency, 'Competency', 120), score, narrative: cleanText(req.body.narrative, 'Assessment narrative', 1000), submittedBy: performanceActor(req), createdAt: new Date().toISOString() });
+    res.status(201).json({ assessment, receipt: createReceipt(`PERFORMANCE_${type}_ASSESSMENT`, profile, { assessmentId: assessment.id, score, competency: assessment.competency }) });
+  } catch (error) { performanceError(res, error); }
+});
+app.post('/api/performance/feedback', requireSession(['employee', 'manager', 'hr']), async (req, res) => {
+  try {
+    const profile = await performanceProfile(req.body.employeeId); const relationship = cleanText(req.body.relationship, 'Feedback relationship', 50);
+    const rating = Number(req.body.rating);
+    if (!Number.isFinite(rating) || rating < 1 || rating > 5) throw new Error('Feedback rating must be between 1 and 5.');
+    const feedback = performanceRecord('feedback', { id: performanceId('PFB'), employeeId: profile.id, employeeName: profile.displayName, cycleId: cleanText(req.body.cycleId, 'Cycle', 80), relationship, competency: cleanText(req.body.competency, 'Competency', 120), rating, comment: cleanText(req.body.comment, 'Feedback comment', 1000), submittedBy: performanceActor(req), createdAt: new Date().toISOString() });
+    res.status(201).json({ feedback });
+  } catch (error) { performanceError(res, error); }
+});
+app.post('/api/performance/calibrations', requireSession(['hr']), (req, res) => {
+  try { const calibration = performanceRecord('calibrations', { id: performanceId('CAL'), cycleId: cleanText(req.body.cycleId, 'Cycle', 80), title: cleanText(req.body.title, 'Calibration title', 160), scheduledFor: validIsoDate(req.body.scheduledFor, 'Scheduled date'), participants: cleanText(req.body.participants, 'Participants', 500), status: 'SCHEDULED', createdBy: performanceActor(req), createdAt: new Date().toISOString() }); res.status(201).json({ calibration }); } catch (error) { performanceError(res, error); }
+});
+app.post('/api/performance/recommendations', requireSession(['hr']), async (req, res) => {
+  try {
+    const profile = await performanceProfile(req.body.employeeId); const type = cleanText(req.body.type, 'Recommendation type', 20).toUpperCase();
+    if (!['PIP', 'PROMOTION', 'COMPENSATION'].includes(type)) throw new Error('Recommendation type must be PIP, PROMOTION, or COMPENSATION.');
+    const recommendation = { id: performanceId(type === 'PIP' ? 'PIP' : 'PRC'), type, employeeId: profile.id, employeeName: profile.displayName, cycleId: cleanText(req.body.cycleId, 'Cycle', 80), rationale: cleanText(req.body.rationale, 'Recommendation rationale', 1000), linkedLearning: cleanText(req.body.linkedLearning, 'Learning and development link', 200), linkedSuccession: cleanText(req.body.linkedSuccession, 'Succession link', 200), status: 'PENDING_HUMAN_APPROVAL', createdBy: performanceActor(req), createdAt: new Date().toISOString(), aiBoundary: 'AI may identify evidence patterns; authorized humans approve PIP, promotion, and compensation decisions.' };
+    performanceRecord(type === 'PIP' ? 'pips' : 'recommendations', recommendation);
+    res.status(201).json({ recommendation, receipt: createReceipt(`PERFORMANCE_${type}_RECOMMENDATION`, profile, { recommendationId: recommendation.id, status: recommendation.status }) });
+  } catch (error) { performanceError(res, error); }
 });
 
 app.get('/api/workday/session/:employeeId', async (req, res) => {
