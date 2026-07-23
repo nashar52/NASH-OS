@@ -1,6 +1,6 @@
 {
   "name": "nash-os-final-operating-system-gold-master",
-  "version": "31.0.0-sprint10-employee-manager-self-service",
+  "version": "32.0.0-sprint11-executive-ai-analytics",
   "description": "NASH OS HF34 organization-assigned role access with dynamic navigation and server-enforced action permissions",
   "main": "server.js",
   "scripts": {
@@ -70,7 +70,8 @@
     "qa:learning-talent": "node scripts/qa-learning-talent.js",
     "qa:recruitment-ats": "node scripts/qa-recruitment-ats.js",
     "qa:sprint10-self-service": "node scripts/qa-sprint10-self-service.js",
-    "qa:saudi-compliance": "node scripts/qa-saudi-compliance.js"
+    "qa:saudi-compliance": "node scripts/qa-saudi-compliance.js",
+    "qa:sprint11": "node scripts/qa-sprint11-executive-ai.js"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -354,6 +355,9 @@
     "noSchemaChangeSaudiCompliance": true
   },
   "nashOs": {
+    "sprint11EnterpriseExecutiveAiAnalyticsActive": true,
+    "sprint11AuditEvidenceReceiptActive": true,
+    "sprint11NoSchemaChange": true,
     "sprint10EnterpriseEmployeeManagerSelfServiceActive": true,
     "sprint10AuditEvidenceReceiptActive": true,
     "sprint10NoSchemaChange": true,
