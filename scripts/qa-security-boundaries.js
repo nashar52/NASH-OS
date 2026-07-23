@@ -15,7 +15,7 @@ async function login(email) {
   const response = await request('/api/access/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tenant: 'NASH Enterprise', email, password: '123456' })
+    body: JSON.stringify({ tenant: 'NASH Enterprise', email, password: 'LocalDemo#2026', mfaCode: '000000' })
   });
   assert.equal(response.status, 200, `Expected login for ${email} to succeed.`);
   return (await response.json()).session.token;
