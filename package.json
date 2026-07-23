@@ -66,7 +66,8 @@
     "qa:security-boundaries": "node scripts/qa-security-boundaries.js",
     "qa:enterprise-hr-core-e2e": "node scripts/qa-enterprise-hr-core-e2e.js",
     "qa:payroll-engine": "node scripts/qa-payroll-engine.js",
-    "qa:performance-management": "node scripts/qa-performance-management.js"
+    "qa:performance-management": "node scripts/qa-performance-management.js",
+    "qa:learning-talent": "node scripts/qa-learning-talent.js"
   },
   "dependencies": {
     "express": "^4.19.2",
