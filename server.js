@@ -8,9 +8,22 @@ loadEnv();
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const LOCK = 'NASH_OS_CLEAN_BUILD_18_FINAL_ACCEPTANCE_LOCAL_RUN_LOCK';
+const MAX_RUNTIME_TENANTS = 200;
+const MAX_RUNTIME_SESSIONS = 1000;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 10;
+const loginAttempts = new Map();
 
 app.use(express.json({ limit: '1mb' }));
 app.use((req, res, next) => {
+  const requestId = crypto.randomUUID();
+  req.requestId = requestId;
+  res.set('X-Request-Id', requestId);
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Referrer-Policy', 'same-origin');
+  res.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.set('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
   if (req.path === '/' || req.path.endsWith('.html') || req.path.endsWith('.js') || req.path.endsWith('.css')) {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.set('Pragma', 'no-cache');
@@ -2380,21 +2393,60 @@ function resolveAssignedRole(email) {
 }
 function readRuntimeSession(req) {
   const token = String(req.get('X-NASH-SESSION') || '');
-  return token ? runtimeAccessSessions.get(token) || null : null;
+  const session = token ? runtimeAccessSessions.get(token) || null : null;
+  if (!session || Date.parse(session.expiresAt) <= Date.now()) {
+    if (token) runtimeAccessSessions.delete(token);
+    return null;
+  }
+  return session;
+}
+function requireSession(roles = []) {
+  return (req, res, next) => {
+    const session = readRuntimeSession(req);
+    if (!session) return res.status(401).json({ error: 'Authenticated access session is required.', requestId: req.requestId });
+    if (roles.length && !roles.includes(session.role)) return res.status(403).json({ error: 'This workspace action is not allowed for your assigned role.', requestId: req.requestId });
+    req.accessSession = session;
+    next();
+  };
+}
+function pruneRuntimeSessions() {
+  const now = Date.now();
+  for (const [token, session] of runtimeAccessSessions) {
+    if (Date.parse(session.expiresAt) <= now) runtimeAccessSessions.delete(token);
+  }
+  while (runtimeAccessSessions.size >= MAX_RUNTIME_SESSIONS) runtimeAccessSessions.delete(runtimeAccessSessions.keys().next().value);
+}
+function loginRateKey(req) { return `${req.ip || 'unknown'}:${String(req.body?.email || '').trim().toLowerCase()}`; }
+function loginAllowed(req) {
+  const key = loginRateKey(req);
+  const now = Date.now();
+  const entry = loginAttempts.get(key);
+  if (!entry || now - entry.startedAt >= LOGIN_WINDOW_MS) return true;
+  return entry.count < LOGIN_MAX_ATTEMPTS;
+}
+function recordLoginAttempt(req) {
+  const key = loginRateKey(req);
+  const now = Date.now();
+  const entry = loginAttempts.get(key);
+  if (!entry || now - entry.startedAt >= LOGIN_WINDOW_MS) loginAttempts.set(key, { count: 1, startedAt: now });
+  else entry.count += 1;
 }
 function publicSession(token, session) {
   return { token, tenant: session.tenant, email: session.email, role: session.role, assignedBy: 'Organization access policy', expiresAt: session.expiresAt };
 }
 app.post('/api/access/login', (req, res) => {
+  if (!loginAllowed(req)) return res.status(429).json({ error: 'Too many sign-in attempts. Try again later.' });
   const tenant = String(req.body.tenant || '').trim();
   const email = String(req.body.email || '').trim().toLowerCase();
   const password = String(req.body.password || '');
-  if (!tenant) return res.status(400).json({ error: 'Organization is required.' });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && !email.endsWith('@nash.local')) return res.status(400).json({ error: 'Valid work email is required.' });
-  if (password.length < 6) return res.status(400).json({ error: 'Password must contain at least 6 characters.' });
+  if (!tenant) { recordLoginAttempt(req); return res.status(400).json({ error: 'Organization is required.' }); }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && !email.endsWith('@nash.local')) { recordLoginAttempt(req); return res.status(400).json({ error: 'Valid work email is required.' }); }
+  if (password.length < 6) { recordLoginAttempt(req); return res.status(400).json({ error: 'Password must contain at least 6 characters.' }); }
   const role = resolveAssignedRole(email);
   const token = crypto.randomBytes(24).toString('hex');
   const session = { tenant, email, role, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString() };
+  loginAttempts.delete(loginRateKey(req));
+  pruneRuntimeSessions();
   runtimeAccessSessions.set(token, session);
   res.json({ ok: true, session: publicSession(token, session), policy: { roleSwitchingBlocked: true, dynamicNavigation: true, serverActionAuthorization: true, schemaChanged: false } });
 });
@@ -2484,17 +2536,28 @@ function saasReceipt(action, target, note) {
   const receipt={receiptId:`NASH-SAAS-${Date.now()}-${Math.random().toString(16).slice(2,7)}`,actionType:action,target,note,status:'RECORDED_RUNTIME_ONLY',createdAt:new Date().toISOString(),source:'HF16-HF20 SaaS control plane; runtime only; HR MySQL schema untouched',policy:{humanFinalDecisionRequired:true,databaseSchemaTouched:false,databaseDataTouched:false}};
   runtimeSaasReceipts.unshift(receipt); runtimeReceipts.unshift(receipt); if(runtimeSaasReceipts.length>300)runtimeSaasReceipts.pop(); return receipt;
 }
-app.post('/api/saas/ai-copilot', async (req,res)=>{
+app.post('/api/saas/ai-copilot', requireSession(['executive']), async (req,res)=>{
   try{const [exec,controls,quality,ai]=await Promise.all([buildExecutiveDashboard(),buildUnifiedControlSummary(),buildQualityGovernanceSummary(),buildAiDecisionSupportSummary()]); const risk=exec.summary?.riskScore||0; const findings=[{label:'Enterprise risk score',value:String(risk)},{label:'Decision backlog',value:String(exec.summary?.decisionBacklog||0)},{label:'Control actions',value:String(controls.runtimeUnifiedControlActions||0)},{label:'Governance actions',value:String(quality.runtimeQualityGovernanceActions||0)}]; const receipt=saasReceipt('AI_COPILOT_RESPONSE',req.body.tenant||'Current tenant','Source-grounded advisory response generated; no action executed.'); res.json({title:'Source-grounded decision brief',summary:risk>=55?'Risk is elevated. Prioritize authorized human review of the highest-risk controls and evidence gaps.':risk>=30?'Risk is moderate. Maintain targeted human review and close open controls before material decisions.':'Visible risk is controlled. Continue monitoring source coverage and decision backlog.',findings,boundary:'The copilot provides analysis only. Authorized humans retain approval, payroll, employee, government, and governance decisions.',receipt});}catch(e){res.status(503).json({error:e.message});}
 });
-app.get('/api/saas/tenants',(req,res)=>res.json({tenants:runtimeSaasTenants,policy:{runtimeIsolation:true,schemaChanged:false}}));
-app.post('/api/saas/tenants',(req,res)=>{const name=String(req.body.name||'').trim();if(!name)return res.status(400).json({error:'Organization name is required.'});const t={id:`TNT-${name.toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,28)}`,name,plan:req.body.plan||'Enterprise Trial',region:req.body.region||'Saudi Arabia',owner:req.body.owner||null,status:'ACTIVE',isolation:'Runtime tenant boundary'};runtimeSaasTenants.push(t);res.json({tenant:t,receipt:saasReceipt('TENANT_PROVISIONED',t.id,'Runtime tenant created without HR schema change.')});});
-app.get('/api/saas/subscription',(req,res)=>res.json({subscription:{tenant:'NASH Enterprise',plan:'Enterprise Trial',status:'ACTIVE',licensedEmployees:600,activeUsers:551,renewalDate:'2026-08-17',usagePercent:92,monthlyEstimate:'24,900'},plans:[{name:'Starter',price:'4,900',limit:'Up to 100 employees'},{name:'Growth',price:'12,900',limit:'Up to 300 employees'},{name:'Enterprise Trial',price:'24,900',limit:'Up to 600 employees'}]}));
-app.post('/api/saas/billing-action',(req,res)=>{const receipt=saasReceipt(req.body.action||'BILLING_ACTION',req.body.target||'Subscription','Commercial action recorded as runtime draft.');res.json({message:'Billing action recorded as a controlled runtime draft.',receipt});});
-app.get('/api/saas/provisioning',(req,res)=>res.json({steps:[{name:'Tenant identity',description:'Organization key and workspace ownership',status:'READY'},{name:'Access policy',description:'Role-bound workspace and permission boundaries',status:'READY'},{name:'Source connection',description:'Existing MySQL source-of-truth validation',status:'READY'},{name:'Branding',description:'Tenant identity and workspace shell',status:'READY'},{name:'Launch acceptance',description:'Final human approval and handoff evidence',status:'READY'}]}));
-app.post('/api/saas/provisioning/run',(req,res)=>res.json({message:'Provisioning acceptance completed in runtime mode. External DNS, identity provider, payment gateway, and cloud infrastructure remain deployment-stage integrations.',receipt:saasReceipt('TENANT_PROVISIONING_RUN',req.body.tenant||'Current tenant','Runtime provisioning gate completed.')}));
-app.get('/api/saas/release-readiness',(req,res)=>res.json({release:{name:'NASH OS HF20 Release Candidate',score:92,status:'LOCAL RELEASE CANDIDATE',summary:'HF16 AI Copilot, HF17 tenant control plane, HF18 subscription and billing, HF19 provisioning, and HF20 readiness gates consolidated without HR schema change.'},gates:[{name:'MySQL source lock',status:'PASS',evidence:'Existing lock checks preserved'},{name:'Role-bound UX',status:'PASS',evidence:'Employee, Manager, HR, Executive separation'},{name:'AI decision boundary',status:'PASS',evidence:'Human final decision required'},{name:'SaaS control plane',status:'PASS',evidence:'Runtime tenant, billing, provisioning receipts'},{name:'Production infrastructure',status:'PENDING',evidence:'Cloud, SSO, payment gateway, monitoring'}]}));
-app.post('/api/saas/release-readiness/run',(req,res)=>res.json({message:'Release gate passed for local release-candidate scope. Production launch still requires cloud infrastructure, security hardening, SSO, payment processing, backups, monitoring, and legal/commercial configuration.',receipt:saasReceipt('HF20_RELEASE_GATE','NASH OS HF20','Local release-candidate gate executed.')}));
+app.get('/api/saas/tenants', requireSession(['executive']), (req,res)=>res.json({tenants:runtimeSaasTenants,policy:{runtimeIsolation:true,schemaChanged:false}}));
+app.post('/api/saas/tenants', requireSession(['executive']), (req,res)=>{
+  const name = String(req.body.name || '').trim().replace(/\s+/g, ' ');
+  const owner = String(req.body.owner || '').trim().toLowerCase();
+  if (!name || name.length > 120) return res.status(400).json({ error: 'Organization name must be between 1 and 120 characters.' });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner)) return res.status(400).json({ error: 'A valid owner email is required.' });
+  const id = `TNT-${name.toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,28)}`;
+  if (runtimeSaasTenants.some((tenant) => tenant.id === id)) return res.status(409).json({ error: 'An organization with this tenant identifier already exists.' });
+  if (runtimeSaasTenants.length >= MAX_RUNTIME_TENANTS) return res.status(429).json({ error: 'Runtime tenant capacity has been reached.' });
+  const t = { id, name, plan: req.body.plan || 'Enterprise Trial', region: req.body.region || 'Saudi Arabia', owner, status:'ACTIVE', isolation:'Runtime tenant boundary' };
+  runtimeSaasTenants.push(t);
+  res.status(201).json({ tenant:t, receipt:saasReceipt('TENANT_PROVISIONED',t.id,'Runtime tenant created without HR schema change.') });
+});
+app.get('/api/saas/subscription', requireSession(['executive']), (req,res)=>res.json({subscription:{tenant:req.accessSession.tenant,plan:'Enterprise Trial',status:'ACTIVE',licensedEmployees:600,activeUsers:551,renewalDate:'2026-08-17',usagePercent:92,monthlyEstimate:'24,900'},plans:[{name:'Starter',price:'4,900',limit:'Up to 100 employees'},{name:'Growth',price:'12,900',limit:'Up to 300 employees'},{name:'Enterprise Trial',price:'24,900',limit:'Up to 600 employees'}]}));
+app.post('/api/saas/billing-action', requireSession(['executive']), (req,res)=>{const receipt=saasReceipt(req.body.action||'BILLING_ACTION',req.body.target||'Subscription','Commercial action recorded as runtime draft.');res.json({message:'Billing action recorded as a controlled runtime draft.',receipt});});
+app.get('/api/saas/provisioning', requireSession(['executive']), (req,res)=>res.json({steps:[{name:'Tenant identity',description:'Organization key and workspace ownership',status:'READY'},{name:'Access policy',description:'Role-bound workspace and permission boundaries',status:'READY'},{name:'Source connection',description:'Existing MySQL source-of-truth validation',status:'READY'},{name:'Branding',description:'Tenant identity and workspace shell',status:'READY'},{name:'Launch acceptance',description:'Final human approval and handoff evidence',status:'READY'}]}));
+app.post('/api/saas/provisioning/run', requireSession(['executive']), (req,res)=>res.json({message:'Provisioning acceptance completed in runtime mode. External DNS, identity provider, payment gateway, and cloud infrastructure remain deployment-stage integrations.',receipt:saasReceipt('TENANT_PROVISIONING_RUN',req.accessSession.tenant,'Runtime provisioning gate completed.')}));
+app.get('/api/saas/release-readiness', requireSession(['executive']), (req,res)=>res.json({release:{name:'NASH OS HF20 Release Candidate',score:92,status:'LOCAL RELEASE CANDIDATE',summary:'HF16 AI Copilot, HF17 tenant control plane, HF18 subscription and billing, HF19 provisioning, and HF20 readiness gates consolidated without HR schema change.'},gates:[{name:'MySQL source lock',status:'PASS',evidence:'Existing lock checks preserved'},{name:'Role-bound UX',status:'PASS',evidence:'Employee, Manager, HR, Executive separation'},{name:'AI decision boundary',status:'PASS',evidence:'Human final decision required'},{name:'SaaS control plane',status:'PASS',evidence:'Runtime tenant, billing, provisioning receipts'},{name:'Production infrastructure',status:'PENDING',evidence:'Cloud, SSO, payment gateway, monitoring'}]}));
+app.post('/api/saas/release-readiness/run', requireSession(['executive']), (req,res)=>res.json({message:'Release gate passed for local release-candidate scope. Production launch still requires cloud infrastructure, security hardening, SSO, payment processing, backups, monitoring, and legal/commercial configuration.',receipt:saasReceipt('HF20_RELEASE_GATE','NASH OS HF20','Local release-candidate gate executed.')}));
 
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
