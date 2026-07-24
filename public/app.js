@@ -56,6 +56,7 @@ const SAAS_NAV = {
   manager: [
     { label: 'Manager Workspace', command: 'mgr_select', icon: '01' },
     { label: 'Organization', command: 'mgr_organization', icon: '02' },
+    { label: 'Workforce Planning', command: 'mgr_workforce', icon: '08' },
     { label: 'Team Dashboard', command: 'mgr_team_workspace', icon: '03' },
     { label: 'Team Queue', command: 'mgr_queue', icon: '02' },
     { label: 'Task Assignment', command: 'mgr_add_task', icon: '03' },
@@ -67,6 +68,7 @@ const SAAS_NAV = {
     { label: 'HR Workspace', command: 'hr_select', icon: '01' },
     { label: 'Employee 360', command: 'hr_file', icon: '02' },
     { label: 'Organization', command: 'hr_organization', icon: '03' },
+    { label: 'Workforce Planning', command: 'hr_workforce', icon: '10' },
     { label: 'Enterprise HR Core', command: 'hr_core', icon: '04' },
     { label: 'Recruitment & ATS', command: 'hr_recruitment', icon: '04' },
     { label: 'Performance', command: 'hr_performance', icon: '05' },
@@ -79,6 +81,7 @@ const SAAS_NAV = {
   executive: [
     { label: 'Executive Dashboard', command: 'exec_dashboard', icon: '01' },
     { label: 'Organization', command: 'exec_organization', icon: '02' },
+    { label: 'Workforce Planning', command: 'exec_workforce', icon: '15' },
     { label: 'Executive Brief', command: 'exec_brief', icon: '03' },
     { label: 'Risk Board', command: 'exec_risk', icon: '03' },
     { label: 'Decision Backlog', command: 'exec_backlog', icon: '04' },
@@ -822,6 +825,29 @@ function organizationChangeRequest(action) {
   $('orgRequestForm').onsubmit = async e => { e.preventDefault(); const f=new FormData(e.target); const out=await api('/api/organization/change-request',{method:'POST',body:{action,entity:f.get('entity'),impact:{rationale:f.get('rationale')}}}); addReceipt(out.receipt); toast(`Request submitted: ${out.receipt.receiptId}`); organizationWorkspace(); };
 }
 
+async function workforcePlanningWorkspace() {
+  openOperation('Enterprise Workforce Planning', 'Loading source-backed position, headcount, vacancy, and advisory workforce signals.', '<div class="ai-workspace-loading">Loading workforce planning…</div>');
+  const [dashboard, positions, vacancies, succession] = await Promise.all([api('/api/workforce/dashboard'), api('/api/workforce/positions'), api('/api/workforce/vacancies'), optionalApi('/api/workforce/succession')]);
+  const role = state.role; const canRequest = role === 'manager' || role === 'hr';
+  const metricRows = dashboard.metrics.map(x => metric(x.label, x.value, `${x.sourceLabel} · ${x.calculationBasis}${x.limitation ? ` · ${x.limitation}` : ''}`)).join('');
+  const positionRows = positions.positions.slice(0,60).map(p=>`<article><span><strong>${esc(p.positionCode)} · ${esc(p.positionTitle)}</strong><small>${esc(p.department)} · holder: ${esc(p.currentPositionHolder)} · reports to: ${esc(p.reportsToPosition)}</small></span><b>${esc(p.vacancyStatus)} · ${esc(p.positionStatus)}</b><small>${esc(p.sourceLabel)} · verified ${esc(p.lastVerifiedTimestamp)}</small></article>`).join('') || '<p class="empty-state">No position records are available in the authorized MySQL scope.</p>';
+  const vacancyRows = vacancies.vacancies.map(v=>`<article><span><strong>${esc(v.positionTitle)}</strong><small>${esc(v.department)} · age: ${esc(v.vacancyAge)} · reason: ${esc(v.vacancyReason)}</small></span><b>${esc(v.vacancyStatus)}</b></article>`).join('') || '<p class="empty-state">No validated vacancies in the authorized scope.</p>';
+  openOperation('Enterprise Workforce Planning', 'Position and employee entities remain separate. All planning requests are runtime-only and require human authorization; MySQL source records are never modified.', `
+    <section class="domain-metrics">${metricRows}</section>
+    <section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">POSITION CONTROL CENTER</p><h3>Source-backed position registry</h3></div><span>MySQL read-only</span></div><div class="domain-list">${positionRows}</div></section>
+    <section class="domain-panel"><p class="eyebrow">VACANCY MANAGEMENT</p><h3>Validated position-holder gaps</h3><div class="domain-list">${vacancyRows}</div><p class="workspace-source-context">${esc(vacancies.calculationBasis)}</p></section>
+    <section class="domain-panel"><p class="eyebrow">WORKFORCE & SUCCESSION ADVISORY</p><h3>Decision support, not decision automation</h3><div class="domain-list">${dashboard.workforcePlanning.map(x=>`<article><span><strong>${esc(x.area)}</strong><small>${esc(x.sourceLabel)} · ${esc(x.limitation)}</small></span><b>${esc(x.value)}</b></article>`).join('')}</div><p class="workspace-source-context">${esc(succession.message || 'Succession data unavailable.')}</p></section>
+    <section class="domain-panel"><p class="eyebrow">ORGANIZATION IMPACT SIMULATOR</p><h3>Read-only dependency preview</h3><form id="workforceImpactForm" class="form-grid"><label>Target position<input name="target" required maxlength="160" placeholder="Position code, ID, or title" /></label><button class="secondary-btn" type="submit">Preview impact</button></form><div id="workforceImpact" class="policy-banner">No preview requested. Unsupported dependencies will be shown as unavailable.</div></section>
+    <section class="domain-panel"><p class="eyebrow">CONTROLLED WORKFLOWS</p><h3>Runtime-only workforce requests</h3>${canRequest ? '<div class="action-grid"><button class="primary-btn" data-workforce-request="POSITION_LIFECYCLE">Request lifecycle change</button><button class="secondary-btn" data-workforce-request="HIRING">Create hiring request</button><button class="secondary-btn" data-workforce-request="REPLACEMENT">Create replacement request</button></div>' : '<p class="empty-state">Permission denied: your assigned role cannot create workforce decisions.</p>'}<p class="workspace-source-context">Every action returns a receipt, evidence reference, audit event, and human authorization status.</p></section>`);
+  $('workforceImpactForm').onsubmit=async e=>{e.preventDefault();const target=new FormData(e.target).get('target');const out=await api('/api/workforce/impact-preview',{method:'POST',body:{target}});$('workforceImpact').innerHTML=out.areas.map(a=>`${esc(a.area)}: <strong>${esc(a.status)}</strong>${a.impact!==undefined?` (${esc(a.impact)})`:''} · ${esc(a.sourceLabel)}`).join('<br>');};
+  document.querySelectorAll('[data-workforce-request]').forEach(b=>b.onclick=()=>workforceRequestForm(b.dataset.workforceRequest));
+}
+function workforceRequestForm(type) {
+  const fields=type==='POSITION_LIFECYCLE'?'<label>Lifecycle state<select name="requestedState">'+['DRAFT','REQUESTED','APPROVED','BUDGET_REVIEW','BUDGET_APPROVED','RECRUITING','FILLED','ACTIVE','FROZEN','SUSPENDED','CLOSED','ARCHIVED'].map(x=>`<option>${x}</option>`).join('')+'</select></label>':type==='HIRING'?'<label>Hiring status<select name="requestedState"><option>DRAFT</option><option>SUBMITTED</option></select></label>':'<label>Replacement type<select name="replacementType"><option>EMPLOYEE_REPLACEMENT</option><option>INTERNAL_TRANSFER</option><option>EXTERNAL_HIRING</option><option>TEMPORARY_COVERAGE</option><option>POSITION_CLOSURE</option><option>BUDGET_RELEASE</option></select></label>';
+  openOperation(`${type.replace('_',' ')} request`, 'This creates a controlled runtime-only packet. It does not modify MySQL position or employee source records.', `<form id="workforceRequestForm" class="form-grid"><label>Target position<input name="targetPosition" required maxlength="160" /></label>${fields}<button class="primary-btn" type="submit">Create controlled request</button></form>`);
+  $('workforceRequestForm').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const out=await api('/api/workforce/requests',{method:'POST',body:{type,targetPosition:f.get('targetPosition'),requestedState:f.get('requestedState'),replacementType:f.get('replacementType')}});addReceipt(out.receipt);openOperation('Workforce request created', out.message, receiptCard(out.receipt));};
+}
+
 async function runCommand(command) {
   try {
     const map = {
@@ -829,6 +855,7 @@ async function runCommand(command) {
       emp_self_service: employeeSelfServiceWorkspace,
       mgr_select: managerWorkspace,
       mgr_organization: organizationWorkspace,
+      mgr_workforce: workforcePlanningWorkspace,
       mgr_team_workspace: managerSelfServiceWorkspace,
       hr_select: hrOperationsWorkspace,
       emp_profile_edit: profileEditForm,
@@ -860,6 +887,7 @@ async function runCommand(command) {
       mgr_escalate_sla: () => permissionReceipt('MANAGER_ESCALATE_SLA', { target: taskLabel(), note: 'Manager escalated SLA.' }),
       hr_file: employee360Workspace,
       hr_organization: organizationWorkspace,
+      hr_workforce: workforcePlanningWorkspace,
       hr_core: enterpriseHrCoreWorkspace,
       hr_recruitment: recruitmentWorkspace,
       hr_upload_document: () => employeeDocumentForm('HR_DOCUMENT_UPLOAD'),
@@ -878,6 +906,7 @@ async function runCommand(command) {
       hr_quality: () => hrDomainApp('quality'),
       hr_ai: () => hrDomainApp('ai'),
       exec_organization: organizationWorkspace,
+      exec_workforce: workforcePlanningWorkspace,
       exec_dashboard: executiveDashboard,
       exec_brief: executiveDashboard,
       exec_risk: () => moduleLoad('Executive Risk Board', '/api/ai/summary'),
