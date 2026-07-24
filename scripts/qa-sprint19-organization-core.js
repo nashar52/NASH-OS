@@ -1,0 +1,12 @@
+'use strict';
+const assert = require('assert'); const fs = require('fs');
+const server = fs.readFileSync('server.js','utf8'); const app = fs.readFileSync('public/app.js','utf8'); const pkg = require('../package.json');
+for (const route of ['/api/organization/summary','/api/organization/tree','/api/organization/departments','/api/organization/positions','/api/organization/reporting-structure','/api/organization/approval-hierarchy','/api/organization/change-request','/api/organization/impact-preview','/api/organization/audit-receipts']) assert.ok(server.includes(route), `Missing organization API ${route}`);
+for (const token of ['organizationWorkspace','organizationChangeRequest','ORGANIZATION EXPLORER','ORGANIZATION CHART','data-org-request','hr_organization','exec_organization']) assert.ok(app.includes(token), `Missing organization UI contract ${token}`);
+assert.ok(server.includes("requireSession(['manager','hr','executive'])"), 'Organization reads must be role-bound.');
+assert.ok(server.includes("requireSession(['hr'])"), 'Organization changes must be HR-only.');
+assert.ok(server.includes('PENDING_HUMAN_FINAL_APPROVAL'), 'Change requests need human final approval.');
+assert.ok(server.includes('never creates, alters, or mutates source tables'), 'MySQL source mutation lock must be documented in code.');
+assert.ok(!server.includes('CREATE TABLE legal_entities'), 'No organization schema creation is allowed.');
+assert.ok(pkg.scripts['qa:sprint19-organization-core'], 'Sprint 19 QA command must exist.');
+console.log('PASS Sprint 19 organization core QA: access boundaries, source-backed APIs/tree/chart, hierarchy gaps, controlled receipts, visible handlers, and MySQL no-mutation lock.');

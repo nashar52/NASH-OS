@@ -55,7 +55,8 @@ const SAAS_NAV = {
   ],
   manager: [
     { label: 'Manager Workspace', command: 'mgr_select', icon: '01' },
-    { label: 'Team Dashboard', command: 'mgr_team_workspace', icon: '02' },
+    { label: 'Organization', command: 'mgr_organization', icon: '02' },
+    { label: 'Team Dashboard', command: 'mgr_team_workspace', icon: '03' },
     { label: 'Team Queue', command: 'mgr_queue', icon: '02' },
     { label: 'Task Assignment', command: 'mgr_add_task', icon: '03' },
     { label: 'Work Review', command: 'mgr_review', icon: '04' },
@@ -65,7 +66,8 @@ const SAAS_NAV = {
   hr: [
     { label: 'HR Workspace', command: 'hr_select', icon: '01' },
     { label: 'Employee 360', command: 'hr_file', icon: '02' },
-    { label: 'Enterprise HR Core', command: 'hr_core', icon: '03' },
+    { label: 'Organization', command: 'hr_organization', icon: '03' },
+    { label: 'Enterprise HR Core', command: 'hr_core', icon: '04' },
     { label: 'Recruitment & ATS', command: 'hr_recruitment', icon: '04' },
     { label: 'Performance', command: 'hr_performance', icon: '05' },
     { label: 'Learning', command: 'hr_training', icon: '05' },
@@ -76,7 +78,8 @@ const SAAS_NAV = {
   ],
   executive: [
     { label: 'Executive Dashboard', command: 'exec_dashboard', icon: '01' },
-    { label: 'Executive Brief', command: 'exec_brief', icon: '02' },
+    { label: 'Organization', command: 'exec_organization', icon: '02' },
+    { label: 'Executive Brief', command: 'exec_brief', icon: '03' },
     { label: 'Risk Board', command: 'exec_risk', icon: '03' },
     { label: 'Decision Backlog', command: 'exec_backlog', icon: '04' },
     { label: 'Governance', command: 'exec_governance', icon: '05' },
@@ -798,12 +801,34 @@ async function enterpriseSecurityWorkspace() {
   $('securityTenant').onclick = () => act('/api/sprint12/saas/action', { type: 'LICENSE_ALLOCATE', tenant: readAccessSession().tenant, licenses: 1 });
 }
 
+async function organizationWorkspace() {
+  openOperation('Enterprise Organization', 'Loading source-backed organization records and structural gaps from the existing MySQL schema.', '<div class="ai-workspace-loading">Loading organization explorer…</div>');
+  const [summary, treeData, positionsData, reporting, approvals] = await Promise.all([api('/api/organization/summary'), api('/api/organization/tree'), api('/api/organization/positions'), api('/api/organization/reporting-structure'), api('/api/organization/approval-hierarchy')]);
+  const nodes = (items) => `<ul class="domain-list">${items.map(n => `<li><strong>${esc(n.label)}</strong> <small>${esc(n.type)} · ${esc(n.source)}</small>${n.children?.length ? nodes(n.children) : ''}</li>`).join('')}</ul>`;
+  const pos = positionsData.positions.slice(0, 80).map(p => `<article><span><strong>${esc(p.code)} · ${esc(p.title)}</strong><small>${esc(p.department)} · ${esc(p.jobFamily)} · grade ${esc(p.grade)} · manager ${esc(p.manager)}</small></span><b class="${p.vacancyState==='Vacant'?'watch':'good'}">${esc(p.vacancyState)} · ${esc(p.budgetState)}</b></article>`).join('') || '<p class="empty-state">No position source records are available.</p>';
+  const canRequest = state.role === 'hr';
+  openOperation('Enterprise Organization', 'Organization Explorer and chart are read-only MySQL adapters. Add, edit, deactivate, and reassign requests are runtime packets awaiting human final approval.', `
+    <section class="domain-metrics">${metric('Departments',summary.metrics.departments,'MySQL: departments')}${metric('Positions',summary.metrics.positions,'MySQL: positions')}${metric('Vacancies',summary.metrics.vacancies,'MySQL: positions + employees')}${metric('Structural gaps',summary.metrics.structuralGaps,'MySQL: employees + positions')}</section>
+    <section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">ORGANIZATION EXPLORER</p><h3>${esc(summary.companyProfile.name)}</h3></div><span>MySQL source-backed</span></div><input id="orgSearch" placeholder="Search department, position, employee, manager, branch, or cost center" /><div id="orgTree">${nodes(treeData.tree)}</div></section>
+    <section class="domain-panel"><p class="eyebrow">ORGANIZATION CHART</p><h3>Reporting structure</h3><div class="domain-list">${reporting.reportingLines.slice(0,80).map(x=>`<article><span>${esc(x.employee)}<small>Reports to ${esc(x.manager)} · ${esc(x.source)}</small></span><strong>${esc(x.positionId || 'Position unmapped')}</strong></article>`).join('') || '<p class="empty-state">No employee reporting lines are available.</p>'}</div><p class="workspace-source-context">Vacant positions: ${reporting.vacantPositions.length} · Positions without assigned managers: ${reporting.positionsWithoutManagers.length} · Orphan records: ${reporting.orphanRecords.length}. Relationships are not inferred where source data is missing.</p></section>
+    <section class="domain-panel"><p class="eyebrow">POSITIONS</p><h3>Vacancy & budget indicators</h3><div class="domain-list">${pos}</div></section>
+    <section class="domain-panel"><p class="eyebrow">APPROVAL HIERARCHY</p><h3>Current resolver</h3><p class="workspace-source-context">${approvals.lines.length} approval lines resolved; ${approvals.missingApprovers.length} missing approvers. Escalation remains human-controlled.</p>${canRequest ? '<div class="action-grid"><button class="primary-btn" data-org-request="ADD">Add request</button><button class="secondary-btn" data-org-request="EDIT">Edit request</button><button class="secondary-btn" data-org-request="DEACTIVATE">Deactivate request</button><button class="secondary-btn" data-org-request="REASSIGN">Reassign request</button></div>' : ''}<p class="workspace-source-context">Missing persistent schema: ${esc(summary.missingPersistentSchema.join(', ') || 'None detected')}. These entities are reported as unsupported rather than created.</p></section>`);
+  $('orgSearch').oninput = async (event) => { const q = event.target.value.trim(); const out = await api(`/api/organization/tree?q=${encodeURIComponent(q)}`); $('orgTree').innerHTML = nodes(out.tree); };
+  document.querySelectorAll('[data-org-request]').forEach(btn => btn.onclick = () => organizationChangeRequest(btn.dataset.orgRequest));
+}
+function organizationChangeRequest(action) {
+  openOperation(`${action} organization request`, 'Preview impact before submitting a controlled runtime approval packet. No MySQL record will be changed.', `<form id="orgRequestForm" class="form-grid"><label>Affected entity<input name="entity" required maxlength="160" placeholder="Department, position, or organization node" /></label><label>Rationale<textarea name="rationale" required></textarea></label><button class="secondary-btn" type="button" id="orgPreview">Preview impact</button><div id="orgImpact" class="policy-banner">Impact preview has not been requested.</div><button class="primary-btn" type="submit">Submit ${esc(action)} request</button></form>`);
+  $('orgPreview').onclick = async () => { const entity = new FormData($('orgRequestForm')).get('entity'); const out = await api('/api/organization/impact-preview',{method:'POST',body:{entity}}); $('orgImpact').textContent=`Affected employees: ${out.affectedEmployees.length}; positions: ${out.affectedPositions.length}; reporting lines: ${out.affectedReportingLines}; approvals: ${out.affectedApprovals}; ${out.payrollOrCostCenterImpact}.`; };
+  $('orgRequestForm').onsubmit = async e => { e.preventDefault(); const f=new FormData(e.target); const out=await api('/api/organization/change-request',{method:'POST',body:{action,entity:f.get('entity'),impact:{rationale:f.get('rationale')}}}); addReceipt(out.receipt); toast(`Request submitted: ${out.receipt.receiptId}`); organizationWorkspace(); };
+}
+
 async function runCommand(command) {
   try {
     const map = {
       emp_select: () => loadEmployees('Select My Record'),
       emp_self_service: employeeSelfServiceWorkspace,
       mgr_select: managerWorkspace,
+      mgr_organization: organizationWorkspace,
       mgr_team_workspace: managerSelfServiceWorkspace,
       hr_select: hrOperationsWorkspace,
       emp_profile_edit: profileEditForm,
@@ -834,6 +859,7 @@ async function runCommand(command) {
       mgr_correction: () => documentActionForm('MANAGER_EVIDENCE_CORRECTION'),
       mgr_escalate_sla: () => permissionReceipt('MANAGER_ESCALATE_SLA', { target: taskLabel(), note: 'Manager escalated SLA.' }),
       hr_file: employee360Workspace,
+      hr_organization: organizationWorkspace,
       hr_core: enterpriseHrCoreWorkspace,
       hr_recruitment: recruitmentWorkspace,
       hr_upload_document: () => employeeDocumentForm('HR_DOCUMENT_UPLOAD'),
@@ -851,6 +877,7 @@ async function runCommand(command) {
       hr_government: governmentComplianceWorkspace,
       hr_quality: () => hrDomainApp('quality'),
       hr_ai: () => hrDomainApp('ai'),
+      exec_organization: organizationWorkspace,
       exec_dashboard: executiveDashboard,
       exec_brief: executiveDashboard,
       exec_risk: () => moduleLoad('Executive Risk Board', '/api/ai/summary'),
