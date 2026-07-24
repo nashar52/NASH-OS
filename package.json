@@ -80,7 +80,8 @@
     "qa:sprint19-organization-core": "node scripts/qa-sprint19-organization-core.js",
     "qa:sprint20-workforce-planning": "node scripts/qa-sprint20-workforce-planning.js",
     "qa:sprint21-workflow-engine": "node scripts/qa-sprint21-workflow-engine.js",
-    "qa:sprint22-lifecycle-engine": "node scripts/qa-sprint22-lifecycle-engine.js"
+    "qa:sprint22-lifecycle-engine": "node scripts/qa-sprint22-lifecycle-engine.js",
+    "qa:sprint23-policy-rules-engine": "node scripts/qa-sprint23-policy-rules-engine.js"
   },
   "dependencies": {
     "express": "^4.19.2",
