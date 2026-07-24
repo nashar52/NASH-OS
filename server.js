@@ -13,6 +13,16 @@ const MAX_RUNTIME_TENANTS = 200;
 const MAX_RUNTIME_SESSIONS = 1000;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 10;
+const LOCAL_DEVELOPMENT = process.env.NODE_ENV !== 'production';
+const LOCAL_DEMO_PASSWORD = 'NashDemo@2026';
+const LOCAL_DEMO_MFA_CODE = '000000';
+// This directory is intentionally runtime-only. It neither reads nor writes MySQL.
+const LOCAL_DEMO_ACCOUNTS = new Map([
+  ['employee@nash.local', { role: 'employee' }],
+  ['manager@nash.local', { role: 'manager' }],
+  ['hr@nash.local', { role: 'hr' }],
+  ['executive@nash.local', { role: 'executive' }]
+]);
 const loginAttempts = new Map();
 const apiAttempts = new Map();
 const sprint12Runtime = { audit: [], receipts: [], evidence: [], devices: [], roles: [], delegations: [], approvals: [], securityEvents: [], tenants: [], subscriptions: [] };
@@ -2696,14 +2706,11 @@ app.get('/api/final-acceptance/actions', (req, res) => {
 
 // HF34 — organization-assigned identity and role-bound access.
 // Local acceptance directory only; no MySQL schema or record changes.
-const HF34_ROLE_DIRECTORY = [
-  { match: /(^|[._-])executive([._-]|@)|(^|[._-])ceo([._-]|@)/i, role: 'executive' },
-  { match: /(^|[._-])hr([._-]|@)|humanresources|peopleops/i, role: 'hr' },
-  { match: /(^|[._-])manager([._-]|@)|(^|[._-])mgr([._-]|@)|supervisor/i, role: 'manager' }
-];
-function resolveAssignedRole(email) {
-  const normalized = String(email || '').trim().toLowerCase();
-  return HF34_ROLE_DIRECTORY.find((entry) => entry.match.test(normalized))?.role || 'employee';
+function resolveAssignedRole(email) { return LOCAL_DEMO_ACCOUNTS.get(String(email || '').trim().toLowerCase())?.role || null; }
+function secretsMatch(value, expected) {
+  const provided = Buffer.from(String(value));
+  const target = Buffer.from(expected);
+  return provided.length === target.length && crypto.timingSafeEqual(provided, target);
 }
 function readRuntimeSession(req) {
   const token = String(req.get('X-NASH-SESSION') || '');
@@ -2749,15 +2756,16 @@ function publicSession(token, session) {
   return { token, tenant: session.tenant, email: session.email, role: session.role, assignedBy: 'Organization access policy', expiresAt: session.expiresAt };
 }
 app.post('/api/access/login', (req, res) => {
-  if (!loginAllowed(req)) return res.status(429).json({ error: 'Too many sign-in attempts. Try again later.' });
+  if (!loginAllowed(req)) return res.status(429).json({ error: 'Too many login attempts' });
   const tenant = String(req.body.tenant || '').trim();
   const email = String(req.body.email || '').trim().toLowerCase();
   const password = String(req.body.password || '');
-  if (!tenant) { recordLoginAttempt(req); return res.status(400).json({ error: 'Organization is required.' }); }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && !email.endsWith('@nash.local')) { recordLoginAttempt(req); return res.status(400).json({ error: 'Valid work email is required.' }); }
-  const passwordError = passwordPolicyError(password); if (passwordError) { recordLoginAttempt(req); return res.status(400).json({ error: passwordError, passwordPolicy: PASSWORD_POLICY }); }
-  if (String(req.body.mfaCode || '') !== '000000') { recordLoginAttempt(req); const artifact = securityArtifact('MFA_CHALLENGE_FAILED', req, { email }); return res.status(401).json({ error: 'A valid MFA code is required for enterprise access.', mfaRequired: true, ...artifact }); }
-  const role = resolveAssignedRole(email);
+  if (!tenant || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { recordLoginAttempt(req); return res.status(401).json({ error: 'Invalid email or password' }); }
+  const account = LOCAL_DEVELOPMENT ? LOCAL_DEMO_ACCOUNTS.get(email) : null;
+  const role = account ? resolveAssignedRole(email) : null;
+  if (!role) { recordLoginAttempt(req); return res.status(403).json({ error: 'Account not configured' }); }
+  if (!secretsMatch(password, LOCAL_DEMO_PASSWORD)) { recordLoginAttempt(req); return res.status(401).json({ error: 'Invalid email or password' }); }
+  if (!secretsMatch(req.body.mfaCode || '', LOCAL_DEMO_MFA_CODE)) { recordLoginAttempt(req); const artifact = securityArtifact('MFA_CHALLENGE_FAILED', req, { email }); return res.status(401).json({ error: 'Invalid MFA code', mfaRequired: true, ...artifact }); }
   const token = crypto.randomBytes(24).toString('hex');
   const session = { tenant, email, role, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString() };
   loginAttempts.delete(loginRateKey(req));
@@ -2766,6 +2774,7 @@ app.post('/api/access/login', (req, res) => {
   securityArtifact('LOGIN_SUCCEEDED', req, { email, role, mfa: 'verified' });
   res.json({ ok: true, session: publicSession(token, session), policy: { roleSwitchingBlocked: true, dynamicNavigation: true, serverActionAuthorization: true, schemaChanged: false } });
 });
+app.get('/api/access/config', (req, res) => res.json({ localDevelopment: LOCAL_DEVELOPMENT }));
 app.get('/api/access/session', (req, res) => {
   const token = String(req.get('X-NASH-SESSION') || '');
   const session = readRuntimeSession(req);

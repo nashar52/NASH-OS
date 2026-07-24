@@ -266,24 +266,18 @@ function initializeLoginExperience() {
     const email = $('emailInput').value.trim();
     const password = $('passwordInput').value;
     const mfaCode = $('mfaCodeInput').value;
-    const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-    let message = '';
-    if (!tenant) message = 'Enter your organization name.';
-    else if (!emailValid) message = 'Enter a valid work email.';
-    else if (password.length < 12) message = 'Password must contain at least 12 characters.';
-    else if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password) || !/[^A-Za-z0-9]/.test(password)) message = 'Password must include upper-case, lower-case, number, and symbol characters.';
-    else if (!/^\d{6}$/.test(mfaCode)) message = 'Enter your 6-digit multi-factor code.';
-    if (message) {
-      error.textContent = message;
-      error.classList.remove('hidden');
-      return;
-    }
+    // The server is the authority for every credential check and the assigned role.
+    // Keep this handler focused on sending the entered values and displaying its clear error.
     error.classList.add('hidden');
     enterWorkspace({ tenant, email, password, mfaCode }).catch((loginError) => { error.textContent = loginError.message; error.classList.remove('hidden'); });
   });
   $('signOutBtn')?.addEventListener('click', signOut);
   $('sidebarToggleBtn')?.addEventListener('click', () => document.querySelector('.sidebar')?.classList.toggle('mobile-open'));
   $('notificationBtn')?.addEventListener('click', () => toast('3 workspace notifications are waiting for review.'));
+
+  api('/api/access/config').then(({ localDevelopment }) => {
+    $('localDemoAccess')?.classList.toggle('hidden', !localDevelopment);
+  }).catch(() => $('localDemoAccess')?.classList.add('hidden'));
 
   const existing = readAccessSession();
   if (existing?.email && existing?.token && ROLES[existing.role]) {
