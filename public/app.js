@@ -76,6 +76,7 @@ const SAAS_NAV = {
     { label: 'Compensation', command: 'hr_compensation', icon: '06' },
     { label: 'Government', command: 'hr_government', icon: '07' },
     { label: 'Quality & Governance', command: 'hr_quality', icon: '08' },
+    { label: 'Policy & Rules', command: 'hr_policy_rules', icon: '11' },
     { label: 'AI Decision Support', command: 'hr_ai', icon: '09' }
   ],
   executive: [
@@ -86,6 +87,7 @@ const SAAS_NAV = {
     { label: 'Risk Board', command: 'exec_risk', icon: '03' },
     { label: 'Decision Backlog', command: 'exec_backlog', icon: '04' },
     { label: 'Governance', command: 'exec_governance', icon: '05' },
+    { label: 'Policy & Rules', command: 'exec_policy_rules', icon: '16' },
     { label: 'AI Risk Radar', command: 'exec_ai', icon: '06' },
     { label: 'Reports Center', command: 'exec_reports', icon: '07' },
     { label: 'AI Copilot', command: 'exec_copilot', icon: '08' },
@@ -665,6 +667,14 @@ async function hrDomainApp(domain) {
   document.querySelector('[data-hr-export]')?.addEventListener('click', () => downloadCsv(`nash-${domain}-queue-${new Date().toISOString().slice(0, 10)}.csv`, [c[4], ...hrRows.filter((row) => !row.hidden).map((row) => [...row.cells].map((cell) => cell.innerText.trim()))]));
 }
 
+async function policyRulesWorkspace() {
+  const [library, registry, conflicts] = await Promise.all([api('/api/policies'), api('/api/rules').catch(() => ({ rules: [] })), api('/api/policies/conflicts').catch(() => ({ conflicts: [] }))]);
+  const policies = library.policies || []; const rules = registry.rules || [];
+  const policyRows = policies.length ? policies.map(p => `<tr><td><strong>${esc(p.policyName)}</strong><small>${esc(p.policyCode)} · v${esc(p.version)}</small></td><td>${esc(p.policyCategory)}</td><td><span class="status-pill">${esc(p.status)}</span></td><td>${esc(p.sourceLabel)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty-state">No policies configured. Runtime-only policy records require an authorized HR creation request; persistent schema support is required.</td></tr>';
+  const ruleRows = rules.length ? rules.map(r => `<tr><td><strong>${esc(r.ruleName)}</strong><small>${esc(r.ruleCode)} · ${esc(r.ruleType)}</small></td><td>${esc(r.module)}</td><td>${esc(r.priority)}</td><td><span class="status-pill">${esc(r.status)}</span></td></tr>`).join('') : '<tr><td colspan="4" class="empty-state">No controlled rule definitions configured.</td></tr>';
+  openOperation('Policy & Rules Engine', 'Server-side, human-governed policy evaluation. MySQL remains the operational source of truth; this release records runtime-only governance packets pending an approved schema migration.', `<section class="hr-ops-shell"><div class="hr-ops-hero"><div><p class="eyebrow">ENTERPRISE POLICY CONTROL</p><h2>Policy Library & Rule Registry</h2><p>Evaluations are advisory or gating only. Final decisions, exceptions, and lifecycle changes require the Enterprise Workflow Engine and authorized human approval.</p></div><div class="hr-source-card"><span>Persistence</span><strong>Runtime-only</strong><small>Schema support required</small></div></div><div class="detail-grid"><div><span>Policies</span><strong>${policies.length}</strong></div><div><span>Rules</span><strong>${rules.length}</strong></div><div><span>Conflicts</span><strong>${(conflicts.conflicts || []).length}</strong></div><div><span>Decision authority</span><strong>Human</strong></div></div><section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">POLICY LIBRARY</p><h3>Searchable controlled policy register</h3></div></div><div class="table-tools"><input id="policySearch" placeholder="Search policy library" aria-label="Search policy library"></div><div class="table-wrap"><table class="domain-table"><thead><tr><th>Policy / Version</th><th>Category</th><th>Status</th><th>Source</th></tr></thead><tbody id="policyRows">${policyRows}</tbody></table></div></section><section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">RULE REGISTRY</p><h3>Safe operator definitions</h3></div></div><p class="hr-ai-note">Approved operators only: Equals, Not Equals, comparisons, contains, list, existence, dates, Between, AND, and OR. Executable expressions are rejected server-side.</p><div class="table-wrap"><table class="domain-table"><thead><tr><th>Rule</th><th>Module</th><th>Priority</th><th>Status</th></tr></thead><tbody>${ruleRows}</tbody></table></div></section><section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">CONFLICT REGISTER</p><h3>Human review required</h3></div></div>${(conflicts.conflicts || []).length ? `<ul>${conflicts.conflicts.map(c => `<li>${esc(c.type)} · ${esc(c.policyId || c.ruleId)}</li>`).join('')}</ul>` : '<p class="empty-state">No runtime conflicts detected. This is not a legal or compliance conclusion.</p>'}</section></section>`);
+  $('policySearch').oninput = e => document.querySelectorAll('#policyRows tr').forEach(row => row.hidden = !row.textContent.toLowerCase().includes(e.target.value.toLowerCase()));
+}
 function payrollMoney(value) { return Number(value || 0).toLocaleString('en-SA', { style: 'currency', currency: 'SAR', maximumFractionDigits: 2 }); }
 async function payrollWorkspace() {
   const data = await api('/api/payroll/dashboard');
@@ -904,6 +914,7 @@ async function runCommand(command) {
       hr_compensation: payrollWorkspace,
       hr_government: governmentComplianceWorkspace,
       hr_quality: () => hrDomainApp('quality'),
+      hr_policy_rules: policyRulesWorkspace,
       hr_ai: () => hrDomainApp('ai'),
       exec_organization: organizationWorkspace,
       exec_workforce: workforcePlanningWorkspace,
@@ -912,6 +923,7 @@ async function runCommand(command) {
       exec_risk: () => moduleLoad('Executive Risk Board', '/api/ai/summary'),
       exec_backlog: () => moduleLoad('Decision Backlog', '/api/controls/summary'),
       exec_governance: () => moduleLoad('Governance Risk', '/api/quality/summary'),
+      exec_policy_rules: policyRulesWorkspace,
       exec_ai: executiveAiWorkspace,
       exec_reports: reportsAnalyticsCenter,
       exec_copilot: aiCopilotWorkspace,
