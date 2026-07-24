@@ -3119,6 +3119,61 @@ app.get('/api/payroll/runs/:id/payslip', requireSession(['hr', 'executive']), (r
   const audit = payrollAudit('PAYSLIP_VIEWED', req.accessSession.email, { runId: run.id }); res.json({ payslip: { runId: run.id, periodId: run.periodId, employeeName: run.employeeName, employeeCode: run.employeeCode, earnings: { basic: run.calculation.basic, allowances: run.calculation.allowances, overtime: run.calculation.overtime, bonus: run.calculation.bonus }, deductions: { unpaidLeave: run.calculation.leaveImpact, deductions: run.calculation.deductions, loan: run.calculation.loanInstallment, gosi: run.calculation.gosiEmployee }, gross: run.calculation.gross, net: run.calculation.net, status: run.status }, audit });
 });
 
+// Sprint 22 — Employee Lifecycle Engine.  Lifecycle entries are additive MySQL
+// records linked to the Sprint 21 workflow/audit chain; no source HR record is
+// mutated by this operational ledger.
+const LIFECYCLE_STAGES = new Set(['CANDIDATE','APPLICATION','SCREENING','INTERVIEW','ASSESSMENT','OFFER','PREBOARDING','ONBOARDING','PROBATION','CONFIRMATION','ACTIVE_EMPLOYMENT','PROMOTION','TRANSFER','ASSIGNMENT','DEVELOPMENT','PERFORMANCE_REVIEW','COMPENSATION_REVIEW','LEAVE','DISCIPLINARY_ACTION','CAREER_PROGRESSION','SUCCESSION_CANDIDATE','SEPARATION','OFFBOARDING','ALUMNI']);
+const LIFECYCLE_EVENT_TYPES = new Set(['HIRING','DEPARTMENT_CHANGE','MANAGER_CHANGE','POSITION_CHANGE','SALARY_REVIEW','PROMOTION','TRANSFER','TRAINING_COMPLETION','CERTIFICATION','PERFORMANCE_REVIEW','POLICY_ACKNOWLEDGEMENT','LEAVE_APPROVAL','DISCIPLINARY_ACTION','RECOGNITION','TERMINATION','RETIREMENT','REHIRE','ALLOWANCE_CHANGE','BONUS','PROMOTION_ADJUSTMENT','COMPENSATION_DECISION','RESIGNATION','END_OF_CONTRACT','DEATH','TRANSFER_OUT','EXIT_INTERVIEW','ASSET_RETURN','KNOWLEDGE_TRANSFER','VACANCY_CLOSURE','REPLACEMENT']);
+let lifecycleSchemaReady = false;
+function lifecycleId(prefix) { return `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`; }
+async function ensureLifecycleSchema() {
+  if (lifecycleSchemaReady) return;
+  await ensureWorkflowSchema();
+  await withConn(async conn => conn.query(`CREATE TABLE IF NOT EXISTS employee_lifecycle_events (
+    event_id VARCHAR(64) PRIMARY KEY, employee_id VARCHAR(160) NOT NULL, lifecycle_stage VARCHAR(40) NOT NULL, event_type VARCHAR(50) NOT NULL,
+    occurred_at DATETIME(3) NOT NULL, actor_email VARCHAR(160) NOT NULL, actor_role VARCHAR(40) NOT NULL, workflow_id VARCHAR(64) NOT NULL,
+    evidence_reference VARCHAR(500) NULL, receipt_id VARCHAR(64) NOT NULL, audit_event_id VARCHAR(64) NOT NULL, status VARCHAR(40) NOT NULL,
+    source_label VARCHAR(160) NOT NULL, human_authorization_status VARCHAR(60) NOT NULL,
+    review_cycle VARCHAR(160) NULL, reviewer VARCHAR(160) NULL, overall_rating VARCHAR(40) NULL, development_plan VARCHAR(500) NULL,
+    promotion_recommendation VARCHAR(500) NULL, improvement_plan VARCHAR(500) NULL, course VARCHAR(160) NULL, certificate VARCHAR(160) NULL,
+    provider VARCHAR(160) NULL, score VARCHAR(40) NULL, competency VARCHAR(160) NULL, separation_reason VARCHAR(60) NULL,
+    KEY ix_lifecycle_employee_date (employee_id, occurred_at), KEY ix_lifecycle_workflow (workflow_id),
+    FOREIGN KEY (workflow_id) REFERENCES workflow_instances(id)
+  )`));
+  lifecycleSchemaReady = true;
+}
+async function lifecycleAccessAllowed(req, employeeId) {
+  if (['hr','executive'].includes(req.accessSession.role)) return true;
+  const data = await organizationSnapshot();
+  const person = data.employees.find(x => String(x.id) === String(employeeId));
+  if (req.accessSession.role === 'manager') return Boolean(person && String(person.manager || '').toLowerCase().includes('manager'));
+  return Boolean(person && (String(person.id) === req.accessSession.email || String(person.name).toLowerCase() === req.accessSession.email.toLowerCase()));
+}
+function lifecycleAdvisory(event) {
+  return { careerRisk:'Advisory only — validate career history and workforce evidence.', turnoverRisk:'Advisory only — no automated retention action.', promotionReadiness:event.promotion_recommendation || 'Not assessed', trainingRecommendation:event.competency ? `Consider development for ${event.competency}; human review required.` : 'Not assessed', retentionRecommendation:'Advisory only — authorized HR decision required.' };
+}
+app.get('/api/lifecycle/stages', requireSession(), (req,res) => res.json({ stages:[...LIFECYCLE_STAGES], eventTypes:[...LIFECYCLE_EVENT_TYPES], sourceOfTruth:'mysql', aiBoundary:'AI is advisory and cannot perform lifecycle actions.' }));
+app.get('/api/lifecycle/timeline/:employeeId', requireSession(), async (req,res) => {
+  try { if (!await lifecycleAccessAllowed(req, req.params.employeeId)) return res.status(403).json({ error:'You are not authorized to view this employee timeline.' }); await ensureLifecycleSchema();
+    const events = await withConn(async conn => { const [rows] = await conn.query('SELECT * FROM employee_lifecycle_events WHERE employee_id=? ORDER BY occurred_at DESC, event_id DESC',[req.params.employeeId]); return rows; });
+    res.json({ employeeId:req.params.employeeId, events, chronology:'descending', sourceOfTruth:'mysql', selfService:req.accessSession.role==='employee', aiAdvisory:events.slice(0,1).map(lifecycleAdvisory)[0] || lifecycleAdvisory({}) });
+  } catch (error) { res.status(503).json({ error:error.message }); }
+});
+app.get('/api/lifecycle/analytics', requireSession(['executive']), async (req,res) => {
+  try { await ensureLifecycleSchema(); const summary=await withConn(async conn=>{const [rows]=await conn.query('SELECT lifecycle_stage AS stage, event_type AS eventType, COUNT(*) AS count FROM employee_lifecycle_events GROUP BY lifecycle_stage, event_type ORDER BY count DESC');return rows;}); res.json({ summary, sourceOfTruth:'mysql', aiBoundary:'Aggregates support executive review only; AI cannot initiate lifecycle actions.' }); } catch(error){res.status(503).json({error:error.message});}
+});
+app.post('/api/lifecycle/events', requireSession(['manager','hr','executive']), async (req,res) => {
+  try {
+    const b=req.body||{}; const stage=cleanText(b.lifecycleStage,'Lifecycle stage',40).toUpperCase(); const type=cleanText(b.eventType,'Event type',50).toUpperCase();
+    if(!LIFECYCLE_STAGES.has(stage) || !LIFECYCLE_EVENT_TYPES.has(type)) throw new Error('Unsupported lifecycle stage or event type.');
+    const employeeId=cleanText(b.employeeId,'Employee ID',160); if(!await lifecycleAccessAllowed(req,employeeId)) return res.status(403).json({error:'You are not authorized to record an event for this employee.'});
+    const workflowIdValue=cleanText(b.workflowId,'Workflow reference',64); const evidence=cleanText(b.evidenceReference,'Evidence reference',500); const occurredAt=b.date ? new Date(b.date) : new Date(); if(Number.isNaN(occurredAt.getTime())) throw new Error('Date must be valid.');
+    await ensureLifecycleSchema(); const eventId=lifecycleId('LCE'); const receiptId=lifecycleId('LCR'); const auditId=lifecycleId('LCA'); let authorizationStatus;
+    await withConn(async conn=>{await conn.beginTransaction();try{const [[workflow]]=await conn.query('SELECT id,state,module_code FROM workflow_instances WHERE id=? FOR UPDATE',[workflowIdValue]); if(!workflow || workflow.module_code!=='EMPLOYEE_LIFECYCLE') throw new Error('A valid Employee Lifecycle workflow reference is required.'); const status=workflow.state==='APPROVED'||workflow.state==='COMPLETED'?'HUMAN_AUTHORIZED':'PENDING_HUMAN_AUTHORIZATION'; authorizationStatus=status; await conn.query('INSERT INTO employee_lifecycle_events (event_id,employee_id,lifecycle_stage,event_type,occurred_at,actor_email,actor_role,workflow_id,evidence_reference,receipt_id,audit_event_id,status,source_label,human_authorization_status,review_cycle,reviewer,overall_rating,development_plan,promotion_recommendation,improvement_plan,course,certificate,provider,score,competency,separation_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[eventId,employeeId,stage,type,occurredAt,req.accessSession.email,req.accessSession.role,workflowIdValue,evidence,receiptId,auditId,status,'Employee Lifecycle Engine',status,b.reviewCycle||null,b.reviewer||null,b.overallRating||null,b.developmentPlan||null,b.promotionRecommendation||null,b.improvementPlan||null,b.course||null,b.certificate||null,b.provider||null,b.score||null,b.competency||null,b.separationReason||null]); await conn.query('INSERT INTO workflow_receipts (receipt_id,workflow_id,event_id,issued_at,actor_email,action_name,source_label) VALUES (?,?,?,?,?,?,?)',[receiptId,workflowIdValue,auditId,new Date(),req.accessSession.email,'LIFECYCLE_EVENT_RECORDED','Employee Lifecycle Engine']); await conn.query('INSERT INTO workflow_audit_events (event_id,workflow_id,receipt_id,occurred_at,actor_email,actor_role,action_name,decision,evidence_reference,source_label,human_authorized) VALUES (?,?,?,?,?,?,?,?,?,?,?)',[auditId,workflowIdValue,receiptId,new Date(),req.accessSession.email,req.accessSession.role,'LIFECYCLE_EVENT_RECORDED',status,evidence,'Employee Lifecycle Engine',status==='HUMAN_AUTHORIZED'?1:0]); await conn.commit();}catch(e){await conn.rollback();throw e;}});
+    res.status(201).json({ eventId, employeeId, receipt:{receiptId,timestamp:new Date().toISOString(),actor:req.accessSession.email,role:req.accessSession.role,event:type,evidenceReference:evidence,sourceLabel:'Employee Lifecycle Engine',auditEventId:auditId,workflowReference:workflowIdValue}, humanAuthorizationStatus:authorizationStatus });
+  } catch(error) { res.status(400).json({error:error.message}); }
+});
+
 app.use((error, req, res, next) => { console.error(JSON.stringify({ level: 'error', requestId: req.requestId, message: error.message })); const artifact = securityArtifact('REQUEST_VALIDATION_FAILED', req, { message: error.message, path: req.path }); res.status(400).json({ error: error.message || 'Request could not be processed.', ...artifact }); });
 
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
