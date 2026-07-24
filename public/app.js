@@ -915,7 +915,7 @@ async function runCommand(command) {
       hr_government: governmentComplianceWorkspace,
       hr_quality: () => hrDomainApp('quality'),
       hr_policy_rules: policyRulesWorkspace,
-      hr_ai: () => hrDomainApp('ai'),
+      hr_ai: sprint24AiDecisionWorkspace,
       exec_organization: organizationWorkspace,
       exec_workforce: workforcePlanningWorkspace,
       exec_dashboard: executiveDashboard,
@@ -924,7 +924,7 @@ async function runCommand(command) {
       exec_backlog: () => moduleLoad('Decision Backlog', '/api/controls/summary'),
       exec_governance: () => moduleLoad('Governance Risk', '/api/quality/summary'),
       exec_policy_rules: policyRulesWorkspace,
-      exec_ai: executiveAiWorkspace,
+      exec_ai: sprint24AiDecisionWorkspace,
       exec_reports: reportsAnalyticsCenter,
       exec_copilot: aiCopilotWorkspace,
       exec_tenants: tenantAdministrationWorkspace,
@@ -1894,6 +1894,15 @@ function compactSourceRows(source, limit = 6) {
     const display = typeof value === 'object' ? (Array.isArray(value) ? `${value.length} records` : 'Available') : value;
     return `<div class="ai-source-row"><span>${esc(key.replace(/([A-Z])/g, ' $1'))}</span><strong>${esc(display)}</strong></div>`;
   }).join('');
+}
+
+async function sprint24AiDecisionWorkspace() {
+  const session = readAccessSession() || {};
+  const endpoint = state.role === 'executive' ? '/api/ai/executive-risk-summary' : state.role === 'hr' ? '/api/ai/policy-compliance' : state.role === 'manager' ? '/api/ai/workflow-delays' : '/api/ai/employee-development';
+  const result = await optionalApi(endpoint);
+  const limitations = result.limitations || ['AI provider not configured.'];
+  openOperation('Enterprise AI Decision Intelligence', 'Source-backed advisory intelligence only. No final HR decision, approval, or operational mutation can be made here.', `<section class="ai-executive-shell"><div class="ai-executive-hero"><div><p class="eyebrow">SPRINT 24 · ROLE-BOUND ADVISORY</p><h2>${esc(state.role === 'executive' ? 'Executive AI Decision Center' : state.role === 'hr' ? 'HR AI Review Queue' : state.role === 'manager' ? 'Manager Team Insights' : 'Employee Development Insights')}</h2><p>Every insight requires source labels, limitations, evidence, and explicit authorized human action through the workflow engine.</p></div><div class="ai-risk-orb watch"><span>Provider status</span><strong>—</strong><small>Advisory unavailable</small></div></div><div class="ai-trust-strip"><span>AI advisory only</span><span>Not a final decision</span><span>Human review required</span><span>Tenant-scoped</span></div><section class="ai-panel"><div class="ai-panel-head"><div><p class="eyebrow">SOURCE & LIMITATIONS</p><h3>Controlled unavailable state</h3></div><span>Insufficient Data</span></div><p class="ai-recommendation-text">AI provider not configured. No recommendation, score, or risk conclusion has been generated.</p><ul>${limitations.map(item=>`<li>${esc(item)}</li>`).join('')}</ul><div class="ai-boundary-note"><strong>Required human action</strong><span>Use existing authorized workflow and policy controls. Configure an approved provider and controlled source mappings before requesting an advisory.</span></div><div class="ai-action-row"><button class="secondary-btn" id="s24Refresh">Refresh source status</button></div></section><section class="ai-panel"><div class="ai-panel-head"><div><p class="eyebrow">EXPLAINABILITY & EVIDENCE</p><h3>What was not evaluated</h3></div><span>Read only</span></div><p>Model invocation, protected attributes, unrestricted records, and final HR decisions were not evaluated. No evidence links are available because no advisory was generated.</p></section></section>`);
+  $('s24Refresh').onclick = sprint24AiDecisionWorkspace;
 }
 
 async function executiveAiWorkspace() {
