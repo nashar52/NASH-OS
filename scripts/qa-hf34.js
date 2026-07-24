@@ -5,11 +5,11 @@ const html = fs.readFileSync('public/index.html','utf8');
 const server = fs.readFileSync('server.js','utf8');
 const pkg = require('../package.json');
 function check(name, pass){ checks.push({name,pass}); console.log(`${pass?'PASS':'FAIL'} ${name}`); }
-check('HF34 package version', pkg.version.includes('hf34-role-bound-access-control'));
+check('Dedicated local authentication QA command present', pkg.scripts['qa:local-auth'] === 'node scripts/qa-local-auth.js');
 check('Login role selector removed', !html.includes('id="loginRoleSelect"'));
 check('Workspace role switcher removed', !html.includes('id="roleSelect"'));
 check('Assigned access card present', html.includes('assignedRoleCard'));
-check('Server role directory present', server.includes('HF34_ROLE_DIRECTORY'));
+check('Explicit local demo account directory present', server.includes('LOCAL_DEMO_ACCOUNTS'));
 check('Server access login present', server.includes("'/api/access/login'"));
 check('Server session validation present', server.includes("'/api/access/session'"));
 check('Permissioned actions use server session role', server.includes('const role = accessSession.role'));
