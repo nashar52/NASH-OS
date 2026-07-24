@@ -484,8 +484,8 @@ async function employeeAttendanceApp() {
 }
 
 async function employeeTasksApp() {
-  await ensureEmployeeContext();
-  const out = await optionalApi('/api/tasks');
+  const employee = await ensureEmployeeContext();
+  const out = employee ? await optionalApi(`/api/workday/tasks/${encodeURIComponent(employee.id)}`) : { tasks: [] };
   const tasks = (Array.isArray(out)?out:(out.tasks||out.data||[])).slice(0,8);
   state.tasks = tasks;
   const openTasks = tasks.filter((task) => !/complete|closed/i.test(task.status || '')).length;
@@ -521,8 +521,16 @@ async function employeeFileApp() {
     </div>
     <section class="domain-panel"><div class="panel-title"><div><p class="eyebrow">DOCUMENT LIBRARY</p><h3>Controlled files</h3></div><button class="secondary-btn small" data-upload-file-2>Add file</button></div><div class="document-grid">${docs.length ? docs.slice(0,6).map(d=>`<article><div class="doc-icon">PDF</div><div><strong>${esc(d.fileName)}</strong><span>${esc(d.category||'Document')}</span><small>${esc(d.status||'Current')}</small></div><button class="text-btn" data-document-preview="${esc(d.fileName)}">View</button></article>`).join('') : '<div class="empty-state">No controlled documents have been uploaded for this employee.</div>'}</div></section>`);
   document.querySelectorAll('[data-upload-file],[data-upload-file-2]').forEach(b=>b.onclick=()=>employeeDocumentForm('EMPLOYEE_DOCUMENT_UPLOAD'));
-  document.querySelectorAll('[data-file-tab]').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('[data-file-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); $('fileTabContext').textContent = `${button.dataset.fileTab} section selected. Source-backed edits require a controlled request.`; }));
-  document.querySelectorAll('[data-document-preview]').forEach((button) => button.addEventListener('click', () => permissionReceipt('DOCUMENT_DOWNLOAD', { target: button.dataset.documentPreview, note: 'Employee requested a controlled document preview/download.' })));
+  const tabDetails = {
+    Overview: `Overview · MySQL employee profile source · ${code}`,
+    Employment: `Employment · ${e?.jobTitle || e?.position || 'Position not mapped'} · ${e?.department || 'Department not mapped'} · source: MySQL employee profile.`,
+    Qualifications: `Qualifications · ${docs.filter((d) => /certificate|cv|qualification/i.test(d.category || '')).length} controlled qualification document(s) in the runtime vault.`,
+    Documents: `Documents · ${docs.length} controlled document(s); download actions create an auditable receipt.`,
+    Emergency: `Emergency · source-backed changes require a controlled profile-edit request; no direct source record edit is available.`,
+    History: `History · runtime document and request activity is source-labelled and does not mutate MySQL HR records.`
+  };
+  document.querySelectorAll('[data-file-tab]').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('[data-file-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); $('fileTabContext').textContent = tabDetails[button.dataset.fileTab] || 'Controlled employee record section.'; }));
+  document.querySelectorAll('[data-document-preview]').forEach((button) => button.addEventListener('click', async () => { const receipt = await permissionReceipt('DOCUMENT_DOWNLOAD', { target: button.dataset.documentPreview, note: 'Employee requested a controlled document download.' }, false); downloadJson(`nash-document-receipt-${receipt.receiptId || idNow()}.json`, receipt); toast(`Download started. Receipt ${receipt.receiptId || receipt.id || 'recorded'}.`); }));
 }
 
 async function employeePerformanceApp() {
@@ -558,13 +566,22 @@ function performanceActionForm(action, defaultCycle) {
 }
 
 async function employeeRightsApp() {
-  await ensureEmployeeContext();
-  appShell('rights','SELF SERVICE','Rights & Reports','Personal entitlements, requests, letters, payslips, and downloadable reports.',`<button class="primary-btn" data-service-request="General employee service">Create Request</button>`,`
-    <div class="service-grid"><button data-service-request="Leave request"><span>Leave balance</span><strong>24 days</strong><small>View and request leave</small></button><button data-service-request="Payslip"><span>Payslips</span><strong>12</strong><small>Download salary statements</small></button><button data-service-request="Employment letter"><span>Employment letter</span><strong>Generate</strong><small>Arabic or English</small></button><button data-service-request="End-of-service estimate"><span>End-of-service estimate</span><strong>Preview</strong><small>Non-binding calculation</small></button><button data-service-request="Benefits enquiry"><span>Benefits</span><strong>Active</strong><small>Medical and allowances</small></button><button data-service-request="Request status"><span>My requests</span><strong>3 open</strong><small>Track approval status</small></button></div>
-    <section class="domain-panel"><p class="eyebrow">REQUEST HISTORY</p><h3>Recent employee services</h3><div class="table-wrap"><table class="domain-table"><thead><tr><th>Request</th><th>Submitted</th><th>Owner</th><th>Status</th><th></th></tr></thead><tbody><tr><td>Employment letter</td><td>20 Jul 2026</td><td>HR Services</td><td><span class="status-pill">Completed</span></td><td><button class="text-btn" data-service-request="Employment letter download">Download</button></td></tr><tr><td>Leave request</td><td>18 Jul 2026</td><td>Manager</td><td><span class="status-pill">Pending</span></td><td><button class="text-btn" data-service-request="Leave request status">Track</button></td></tr><tr><td>Bank details update</td><td>10 Jul 2026</td><td>Payroll</td><td><span class="status-pill">Verified</span></td><td><button class="text-btn" data-service-request="Bank details update">View</button></td></tr></tbody></table></div></section>`);
-  document.querySelectorAll('[data-service-request]').forEach((button) => button.addEventListener('click', () => permissionReceipt('EMPLOYEE_SERVICE_REQUEST', { target: button.dataset.serviceRequest, note: 'Employee service request opened for controlled HR review.' })));
+  const employee = await ensureEmployeeContext();
+  const out = employee ? await optionalApi(`/api/self-service/rights/${encodeURIComponent(employee.id)}`) : {};
+  const source = out.source || 'MySQL employee profile + runtime receipts; no schema change';
+  const services = [
+    ['Leave request', 'Leave', 'Create a controlled leave request'], ['Payslip request', 'Payslip', 'Request a source-labelled payslip'],
+    ['Employment letter', 'Employment Letter', 'Request a downloadable employment letter receipt'], ['Benefits enquiry', 'Benefits', 'Ask HR about active benefits'],
+    ['End-of-service estimate', 'EOS Estimate', 'Request a non-binding human-reviewed estimate']
+  ];
+  appShell('rights','SELF SERVICE','Rights & Reports','Personal requests and report receipts. All values are source-labelled; HR retains the final decision.',`<button class="primary-btn" data-service-request="General employee service">Create Request</button>`, `
+    <p class="workspace-source-context">Source: ${esc(source)}</p>
+    <div class="service-grid">${services.map(([request,label,detail]) => `<button data-service-request="${esc(request)}"><span>${esc(label)}</span><strong>Request</strong><small>${esc(detail)}</small></button>`).join('')}</div>
+    <section class="domain-panel"><p class="eyebrow">REQUEST HISTORY</p><h3>Runtime service receipts</h3><div class="domain-list" id="rightsReceiptList"><div class="empty-state">No employee service receipts in this browser session.</div></div></section>`);
+  const renderReceipts = () => { const items = state.receipts.filter((r) => r.actionType === 'EMPLOYEE_SERVICE_REQUEST').slice(0, 8); $('rightsReceiptList').innerHTML = items.length ? items.map((r) => `<article><span><strong>${esc(r.target || r.actionType)}</strong><small>${esc(r.source || source)}</small></span><button class="text-btn" data-rights-download="${esc(r.receiptId || r.id || '')}">Download receipt</button></article>`).join('') : '<div class="empty-state">No employee service receipts in this browser session.</div>'; document.querySelectorAll('[data-rights-download]').forEach((button) => button.onclick = () => { const receipt = state.receipts.find((r) => String(r.receiptId || r.id) === button.dataset.rightsDownload); if (receipt) { downloadJson(`nash-service-receipt-${button.dataset.rightsDownload}.json`, receipt); toast(`Download started. Receipt ${button.dataset.rightsDownload}.`); } }); };
+  document.querySelectorAll('[data-service-request]').forEach((button) => button.addEventListener('click', async () => { const target = button.dataset.serviceRequest; const receipt = await permissionReceipt('EMPLOYEE_SERVICE_REQUEST', { target, note: `${target} routed for authorized HR review.`, source }, false); toast(`Request recorded. Receipt ${receipt.receiptId || receipt.id || 'available'}.`); renderReceipts(); }));
+  renderReceipts();
 }
-
 async function learningTalentWorkspace() {
   if (!state.employees.length) state.employees = (await api('/api/employees')).employees || [];
   const data = await api('/api/learning-talent/dashboard'); const m=data.metrics||{}; const records=data.records||{};
@@ -1727,6 +1744,12 @@ async function executiveDashboard() {
 
 function reportMetric(label, value, source, trend = 'Current') {
   return `<article class="report-kpi"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(source)} · ${esc(trend)}</small></article>`;
+}
+
+function downloadJson(filename, payload) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob); const anchor = document.createElement('a');
+  anchor.href = url; anchor.download = filename; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 500);
 }
 
 function downloadCsv(filename, rows) {
