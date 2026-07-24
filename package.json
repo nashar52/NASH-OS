@@ -75,7 +75,8 @@
     "qa:sprint12": "node scripts/qa-sprint12-enterprise-security.js",
     "qa:sprint13": "node scripts/qa-sprint13-gold-master-candidate.js",
     "qa:post-gold-master-operational": "node scripts/qa-post-gold-master-operational.js",
-    "qa:local-auth": "node scripts/qa-local-auth.js"
+    "qa:local-auth": "node scripts/qa-local-auth.js",
+    "qa:sprint18-employee-operational": "node scripts/qa-sprint18-employee-operational.js"
   },
   "dependencies": {
     "express": "^4.19.2",
