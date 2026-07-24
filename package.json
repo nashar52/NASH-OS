@@ -82,7 +82,8 @@
     "qa:sprint21-workflow-engine": "node scripts/qa-sprint21-workflow-engine.js",
     "qa:sprint22-lifecycle-engine": "node scripts/qa-sprint22-lifecycle-engine.js",
     "qa:sprint23-policy-rules-engine": "node scripts/qa-sprint23-policy-rules-engine.js",
-    "qa:sprint24-ai-decision-intelligence": "node scripts/qa-sprint24-ai-decision-intelligence.js"
+    "qa:sprint24-ai-decision-intelligence": "node scripts/qa-sprint24-ai-decision-intelligence.js",
+    "qa:sprint25-enterprise-core-integration": "node scripts/qa-sprint25-enterprise-core-integration.js"
   },
   "dependencies": {
     "express": "^4.19.2",

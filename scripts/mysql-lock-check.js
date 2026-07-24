@@ -19,12 +19,15 @@ async function countTable(conn, table) {
 async function main() {
   const cfg = dbConfig();
   const lock = runtimeLock();
-  const conn = await mysql.createConnection(cfg);
+  if (!cfg.host || !cfg.database || !cfg.user || !process.env.DB_PASSWORD) throw Object.assign(new Error('Database configuration is incomplete. Set DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, and DB_NAME in an untracked .env file.'), { code: 'NASH_DB_CONFIGURATION_MISSING' });
+  let conn;
+  try { conn = await mysql.createConnection(cfg); } catch (error) { const code = error.code || 'UNKNOWN'; const classifications = { ECONNREFUSED: 'Connection refused', ER_ACCESS_DENIED_ERROR: 'Authentication failed', ER_BAD_DB_ERROR: 'Database missing' }; throw Object.assign(new Error(`${classifications[code] || 'Database connection failed'} (${code}) at ${cfg.host}:${cfg.port}/${cfg.database}. ${error.message}`), { code }); }
   const counts = {};
+  const missingTables = [];
   for (const table of TABLES) {
     if (await tableExists(conn, cfg.database, table)) {
       counts[table] = await countTable(conn, table);
-    }
+    } else missingTables.push(table);
   }
   await conn.end();
 
@@ -47,6 +50,7 @@ async function main() {
       seedIfEmpty: lock.seedIfEmpty
     },
     counts,
+    missingTables,
     policy: {
       schemaMigrationIncluded: false,
       databaseSchemaTouched: false,
@@ -55,16 +59,18 @@ async function main() {
     }
   };
 
+  if (missingTables.length) { console.error(JSON.stringify(result, null, 2)); console.error(`Required table missing: ${missingTables.join(', ')}`); process.exit(3); }
   if (lock.mode !== 'mysql' || lock.sourceOfTruth !== 'mysql' || lock.fallbackActive || lock.jsonFallbackAllowed || lock.autoMigrate || lock.seedIfEmpty) {
     console.error(JSON.stringify(result, null, 2));
     process.exit(2);
   }
-  console.log('NASH Clean Build 00 MySQL runtime lock check passed.');
+  console.log('NASH MySQL source lock passed. Schema capability status: required baseline tables available.');
   console.log(JSON.stringify(result, null, 2));
 }
 
 main().catch((error) => {
   console.error('NASH Clean Build 00 MySQL runtime lock check failed.');
+  console.error(`Classification: ${error.code === 'NASH_DB_CONFIGURATION_MISSING' ? 'Configuration missing' : error.code || 'Schema capability missing'}`);
   console.error(error.message);
   process.exit(1);
 });
